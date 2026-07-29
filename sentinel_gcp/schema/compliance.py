@@ -8,8 +8,15 @@ reviewer) tell "the system is certain this is missing" (source=rule_engine,
 confidence=1.0) apart from "the model made a judgment call about ambiguous
 wording" (source=agent_2, confidence=weighted/uncertain) — see
 ARCHITECTURE.md §4 for the confidence formula this feeds into.
+
+A model_validator enforces that the two sources can't produce
+cross-contaminated fields — a rule_engine flag can never carry an
+llm_certainty (it has none, by definition), and an agent_2 flag must
+carry both llm_certainty and a retrieved_chunk_id, since an LLM finding
+with no cited evidence source is exactly the kind of ungrounded claim
+this whole schema exists to prevent.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Optional, List, Literal
 
 
@@ -28,8 +35,35 @@ class ComplianceFlag(BaseModel):
     # can combine them per ARCHITECTURE.md §4, rather than trusting one bare number
     extraction_confidence: Optional[float] = None
     retrieval_score: Optional[float] = None
-    llm_certainty: Optional[float] = None              # None for rule_engine flags — they're deterministic (implicitly 1.0)
+    llm_certainty: Optional[float] = None              # rule_engine flags must NOT set this — enforced below
     final_confidence: Optional[float] = None           # computed, filled in at generate_report time
+
+    @model_validator(mode="after")
+    def check_source_consistency(self) -> "ComplianceFlag":
+        if self.source == "rule_engine":
+            if self.llm_certainty is not None:
+                raise ValueError(
+                    "rule_engine flags are deterministic and must not carry llm_certainty "
+                    "(implicitly 1.0 — there's no model judgment to score)"
+                )
+            if self.retrieved_chunk_id is not None:
+                raise ValueError(
+                    "rule_engine flags check canonical fields directly, not retrieved "
+                    "regulation chunks — retrieved_chunk_id should be unset"
+                )
+        elif self.source == "agent_2":
+            if self.llm_certainty is None:
+                raise ValueError(
+                    "agent_2 flags must report llm_certainty — an LLM finding with no "
+                    "stated certainty can't be scored by compute_confidence()"
+                )
+            if self.retrieved_chunk_id is None:
+                raise ValueError(
+                    "agent_2 flags must cite a retrieved_chunk_id — an LLM finding with "
+                    "no evidence source is exactly the ungrounded-claim case this schema "
+                    "exists to prevent (see ARCHITECTURE.md §6, groundedness)"
+                )
+        return self
 
 
 class RuleResult(BaseModel):
