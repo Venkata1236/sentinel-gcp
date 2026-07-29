@@ -10,7 +10,7 @@ tables (merged headers, footnote markers) are the known stress point for
 naive PDF extraction — a low confidence score on a TableRegion signals that
 a downstream node (or a human) should double-check that table's content.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
 
 
@@ -26,7 +26,7 @@ class TableRegion(BaseModel):
     name: Optional[str] = None             # e.g. "Schedule of Events"
     page_start: int
     page_end: Optional[int] = None
-    parsed_rows: List[Dict[str, str]] = []  # row data as extracted
+    parsed_rows: List[Dict[str, str]] = Field(default_factory=list)
     confidence: float = 1.0                 # Docling's structure-recognition confidence
     raw_bbox: Optional[List[float]] = None  # bounding box, for re-cropping if needed later
 
@@ -44,14 +44,14 @@ class ParsingCoverage(BaseModel):
     """Honesty layer — what fraction of the document was actually captured,
     so gaps are visible rather than silent."""
     total_pages: int
-    ocr_fallback_pages: List[int] = []
+    ocr_fallback_pages: List[int] = Field(default_factory=list)
     figures_detected: int = 0
-    tables_flagged_low_confidence: List[int] = []  # page numbers
+    tables_flagged_low_confidence: List[int] = Field(default_factory=list)  # page numbers
 
 
 class DocumentStructure(BaseModel):
-    sections: List[Section] = []
-    tables: List[TableRegion] = []
-    figures: List[FigureRegion] = []
-    raw_text_by_page: Dict[int, str] = {}
+    sections: List[Section] = Field(default_factory=list)
+    tables: List[TableRegion] = Field(default_factory=list)
+    figures: List[FigureRegion] = Field(default_factory=list)
+    raw_text_by_page: Dict[int, str] = Field(default_factory=dict)
     parsing_coverage: ParsingCoverage
