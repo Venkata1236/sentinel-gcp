@@ -46,7 +46,8 @@ class ParsingCoverage(BaseModel):
     total_pages: int
     ocr_fallback_pages: List[int] = Field(default_factory=list)
     figures_detected: int = 0
-    tables_flagged_low_confidence: List[int] = Field(default_factory=list)  # page numbers
+    tables_flagged_low_confidence: List[int] = Field(default_factory=list)
+    parsing_duration_seconds: Optional[float] = None   # NEW — production monitoring metric
 
 
 class DocumentStructure(BaseModel):
@@ -55,3 +56,5 @@ class DocumentStructure(BaseModel):
     figures: List[FigureRegion] = Field(default_factory=list)
     raw_text_by_page: Dict[int, str] = Field(default_factory=dict)
     parsing_coverage: ParsingCoverage
+    
+    
