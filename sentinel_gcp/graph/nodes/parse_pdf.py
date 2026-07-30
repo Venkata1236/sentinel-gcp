@@ -235,16 +235,21 @@ def _looks_like_scanned_page(text: str) -> bool:
 
 def _extract_section_id(heading_text: str) -> str | None:
     """Pulls a section number like '9.6' off a heading string, optionally
-    preceded by a word like 'Section' or 'Appendix':
-      '9.6 SAE Reporting'      -> '9.6'
-      'Section 9.6 SAE...'     -> '9.6'
-      'Appendix A.1 ...'       -> 'A.1'
-    TODO: doesn't yet handle bare 'Appendix A' with no numeric suffix,
-    or table/figure numbering conventions — expand as more real
-    protocols surface these variants (see ARCHITECTURE.md §7,
-    variance-coverage strategy)."""
+    preceded by a word like 'Section' or 'Appendix'. Tightened after real
+    testing showed the looser version false-matching addresses/dates
+    (e.g. '10628 Science Center Dr', '22 August 2022') — see CHECKPOINTS.md."""
     import re
-    match = re.match(r"^(?:Section|Appendix)?\s*(\d+(\.\d+)*|[A-Z](\.\d+)*)\s", heading_text)
+    heading_text = heading_text.strip()
+
+    # Reject obvious non-headings first
+    if len(heading_text) > 100:  # real headings are short; addresses/dates in longer lines aren't
+        return None
+    if re.match(r"^\d{1,5}\s+[A-Z]", heading_text):  # looks like a street address
+        return None
+    if re.match(r"^\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December)", heading_text):
+        return None
+
+    match = re.match(r"^(?:Section|Appendix)?\s*(\d+(\.\d+)+|[A-Z]\.\d+)\s+\S", heading_text)
     return match.group(1) if match else None
 
 
