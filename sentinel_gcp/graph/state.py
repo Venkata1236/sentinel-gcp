@@ -46,6 +46,7 @@ GraphStatus = Literal[
 
 class GraphState(TypedDict):
     # ── Input ──────────────────────────────────────────────
+    run_id: str              # NEW — unique per pipeline run, set at POST /analyze time
     raw_pdf_path: str
 
     # ── Stage 1: parse_pdf ────────────────────────────────
