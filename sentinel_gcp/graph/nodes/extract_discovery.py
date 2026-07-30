@@ -44,8 +44,11 @@ CRITICAL_DISCOVERY_FIELDS = ["trial_identifier_label", "sponsor_label", "phase_l
 # matching, not fuzzy/semantic search. Good enough to locate candidate
 # pages; the LLM still does the actual reading/labeling on those pages.
 DISCOVERY_KEYWORDS = [
-    "Sponsor", "Protocol Number", "Study Code", "PROTOCOL NO",
-    "Phase", "Development Phase", "IND Number", "EudraCT",
+    "Sponsor", "Sponsor Name", "Study Sponsor", "Trial Sponsor",
+    "Protocol Number", "Protocol No", "PROTOCOL NO", "Study Code",
+    "Study Identifier", "Clinical Trial Identifier", "Trial ID",
+    "Phase", "Development Phase", "Phase of Development",
+    "IND Number", "US IND", "EudraCT",
 ]
 
 DISCOVERY_SYSTEM_PROMPT = """You are analyzing a clinical trial protocol document to identify its \
