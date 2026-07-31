@@ -10,20 +10,22 @@ through the whole run; it's what makes conditional routing possible
 to route to retry_extraction or contradiction_check).
 
 Field ownership by node (per ARCHITECTURE.md §2.2):
-  raw_pdf_path          ← set once, at graph invocation (POST /analyze)
-  document_structure    ← parse_pdf (node 1)
-  extraction_discovery  ← extract_discovery (node 2)
-  extraction            ← extract_fill (node 3)
-  extraction_errors     ← validate_schema (node 4)
-  retry_count           ← retry_extraction (node 5)
-  jurisdiction           ← determine_jurisdiction (node 7)
-  rule_results            ← rule_engine (node 8)
-  retrieved_chunks        ← retrieve (node 9)
-  agent_2_flags           ← compliance_check (node 10)
-  early_contradiction_findings ← contradiction_check (node 6)
-  deep_contradiction_findings  ← deep_contradiction_check (node 11)
-  human_decisions          ← human_review_gate (node 12)
-  status                   ← updated by nearly every node
+  run_id                 ← set once, at POST /analyze time
+  raw_pdf_path            ← set once, at graph invocation
+  document_structure       ← parse_pdf (node 1)
+  extraction_discovery      ← extract_discovery (node 2)
+  extraction                 ← extract_fill (node 3)
+  extraction_errors           ← validate_schema (node 4)
+  retry_count                  ← retry_extraction (node 5)
+  early_contradiction_findings  ← contradiction_check (node 6)
+  jurisdiction                   ← determine_jurisdiction (node 7)
+  rule_results                     ← rule_engine (node 8)
+  retrieved_chunks                  ← retrieve (node 9)
+  agent_2_flags                      ← compliance_check (node 10)
+  deep_contradiction_findings          ← deep_contradiction_check (node 11)
+  human_decisions                       ← human_review_gate (node 12) / API layer
+  final_report                            ← generate_report (node 14)
+  status                                   ← updated by nearly every node
 """
 from typing import TypedDict, Optional, List, Literal
 
@@ -33,20 +35,20 @@ from sentinel_gcp.schema.compliance import ComplianceFlag, RuleResult, Contradic
 
 
 GraphStatus = Literal[
-    "extracting",     # nodes 1-3 in progress
-    "validating",     # node 4 (and possibly node 5 retry) in progress
-    "checking",       # nodes 6-8 in progress
-    "retrieving",     # node 9 in progress
-    "reasoning",       # node 10-11 in progress
-    "reviewing",       # node 12 — paused, waiting on a human
-    "complete",         # node 14 finished successfully
-    "needs_human",       # validation failed twice — routed out early, never reached Agent 2
+    "extracting",
+    "validating",
+    "checking",
+    "retrieving",
+    "reasoning",
+    "reviewing",
+    "complete",
+    "needs_human",
 ]
 
 
 class GraphState(TypedDict):
     # ── Input ──────────────────────────────────────────────
-    run_id: str              # NEW — unique per pipeline run, set at POST /analyze time
+    run_id: str
     raw_pdf_path: str
 
     # ── Stage 1: parse_pdf ────────────────────────────────
@@ -70,7 +72,7 @@ class GraphState(TypedDict):
     rule_results: List[RuleResult]
 
     # ── Stage 9: retrieve ─────────────────────────────────────
-    retrieved_chunks: List[dict]        # raw Pinecone/FAISS query results
+    retrieved_chunks: List[dict]
 
     # ── Stage 10: compliance_check (Agent 2) ───────────────────
     agent_2_flags: List[ComplianceFlag]
@@ -83,12 +85,12 @@ class GraphState(TypedDict):
 
     # ── Stage 14: generate_report ────────────────────────────────
     final_report: Optional[dict]
-    
+
     # ── Overall run status, updated throughout ───────────────────
     status: GraphStatus
 
 
-def initial_state(raw_pdf_path: str) -> GraphState:
+def initial_state(raw_pdf_path: str, run_id: str) -> GraphState:
     """Factory for a fresh GraphState at the start of a run —
     every list starts empty, every optional starts None, so no node
     has to guess whether a field exists yet or handle a KeyError."""
@@ -107,6 +109,6 @@ def initial_state(raw_pdf_path: str) -> GraphState:
         agent_2_flags=[],
         deep_contradiction_findings=[],
         human_decisions=[],
-        final_report=None,   # NEW
+        final_report=None,
         status="extracting",
     )
