@@ -13,10 +13,10 @@ Sources fetched (matching what the project's Phase 1 study covered):
   - ICH-GCP E6(R3) — official EMA-hosted Step 5 PDF. Tagged jurisdiction
     "ICH" (not "EMA") since this guideline applies broadly across FDA
     and EMA trials, not exclusively European ones.
-  - EU Clinical Trials Regulation (EU) No 536/2014 — official EUR-Lex
-    HTML page. Tagged jurisdiction "EMA", NOT "ICH" — this is
-    EU-specific procedural law, distinct from ICH-GCP's cross-
-    jurisdiction scientific/ethical standard.
+  - EU Clinical Trials Regulation (EU) No 536/2014 — via the EU
+    Publications Office's CELLAR API. Tagged jurisdiction "EMA", NOT
+    "ICH" — this is EU-specific procedural law, distinct from
+    ICH-GCP's cross-jurisdiction scientific/ethical standard.
 
 Each fetched document is tagged with its jurisdiction at THIS stage,
 not later — this is what lets chunk_and_embed.py propagate jurisdiction
@@ -30,12 +30,18 @@ FIXES applied via real testing, not just code review:
   2. eCFR responses were decoding with mojibake (Â§ instead of §) —
      requests was guessing the wrong charset. response.encoding is now
      forced to "utf-8" before reading .text.
-  3. EUR-Lex's PDF-generation endpoint returns HTTP 202 (Accepted) with
-     0 bytes on a synchronous GET — it generates PDFs asynchronously,
-     not on-demand synchronously. Switched to EUR-Lex's HTML page
-     instead, which serves the same legal text synchronously with no
-     generation delay. Confirmed via a debug print of status/content-
-     length/content-type before this fix was applied.
+  3. EUR-Lex's interactive site (eur-lex.europa.eu) has Akamai-style bot
+     protection — every request, including the PDF endpoint and the
+     plain HTML page, returned persistent HTTP 202 (Accepted) with an
+     empty body for automated requests, confirmed via debug diagnostics.
+     No header/retry combination resolved it — this is a genuine bot
+     wall, not a code bug.
+  4. Fixed by switching to the EU Publications Office's CELLAR API
+     (publications.europa.eu) — a SEPARATE, purpose-built machine-
+     readable retrieval service, the actual backend EUR-Lex's own site
+     is built on. Its RESTful resource URIs require a ?language={code}
+     query parameter to resolve — a bare CELEX URI with no language
+     specified returns 404, also confirmed via real testing.
 """
 import logging
 import time
@@ -106,14 +112,15 @@ ICH_SOURCES = [
     ),
 ]
 
-# EU Clinical Trials Regulation — official EUR-Lex HTML page (NOT the
-# PDF endpoint, which is async — see fix #3 above). Tagged "EMA", NOT
-# "ICH" — EU-specific procedural/legal framework, distinct from
-# ICH-GCP's broadly-applicable scientific/ethical standard.
+# EU Clinical Trials Regulation — via CELLAR, NOT the bot-protected
+# interactive EUR-Lex site (see fixes #3/#4 above). ?language=eng is
+# REQUIRED — a bare CELEX resource URI returns 404 without it. Tagged
+# "EMA", NOT "ICH" — EU-specific procedural/legal framework, distinct
+# from ICH-GCP's broadly-applicable scientific/ethical standard.
 EU_SOURCES = [
     RegulationSource(
         name="Regulation (EU) No 536/2014 — EU Clinical Trials Regulation",
-        url="http://publications.europa.eu/resource/celex/32014R0536",
+        url="http://publications.europa.eu/resource/celex/32014R0536?language=eng",
         jurisdiction="EMA",
         output_filename="eu_ctr_536_2014.html",
     ),
@@ -178,10 +185,10 @@ def fetch_all_eu_sources() -> list[Path]:
     content retrieval service on a SEPARATE domain (publications.europa.eu)
     from the bot-protected interactive EUR-Lex site (eur-lex.europa.eu).
     This is the actual backend service EUR-Lex's own website is built on,
-    purpose-built for automated access via content negotiation — not a
-    scraping workaround. Confirmed via research after EUR-Lex's
-    interactive page returned persistent HTTP 202 bot-detection responses
-    that no header/retry combination resolved."""
+    purpose-built for automated access. Requires ?language=eng in the URL
+    to resolve (see fix #4 in module docstring). Debug print retained
+    given how many attempts this source has needed — remove once
+    confirmed stable across a few real runs."""
     written_paths = []
 
     for source in EU_SOURCES:
@@ -192,10 +199,12 @@ def fetch_all_eu_sources() -> list[Path]:
             response = requests.get(
                 source.url,
                 timeout=60,
-                headers={
-                    "Accept": "text/html",
-                    "Accept-Language": "eng",
-                },
+                headers={"Accept": "text/html"},
+            )
+            print(
+                f"DEBUG: status={response.status_code}, content-length={len(response.content)}, "
+                f"content-type={response.headers.get('Content-Type')}, "
+                f"redirected={response.history}, final_url={response.url}"
             )
             response.raise_for_status()
             response.encoding = "utf-8"
