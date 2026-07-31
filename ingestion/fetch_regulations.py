@@ -12,17 +12,19 @@ Sources fetched (matching what the project's Phase 1 study covered):
   - FDA 21 CFR 312 (via eCFR, machine-readable API)
   - ICH-GCP E6(R3) — official EMA-hosted Step 5 PDF. Tagged jurisdiction
     "ICH" (not "EMA") since this guideline applies broadly across FDA
-    and EMA trials, not exclusively European ones. See
-    retrieval/pinecone_store.py's $in filter fix — this is what makes
-    "ICH"-tagged chunks actually retrievable by both FDA- and
-    EMA-jurisdiction queries.
-  - EU Clinical Trials Regulation (EMA-specific, beyond ICH-GCP) —
-    STILL a known gap, not addressed in this pass; see
-    EU_SOURCES_TODO below.
+    and EMA trials, not exclusively European ones.
+  - EU Clinical Trials Regulation (EU) No 536/2014 — official EUR-Lex
+    consolidated PDF. Tagged jurisdiction "EMA", NOT "ICH" — this is
+    EU-specific procedural law (submission timelines, CTIS, multi-
+    Member-State coordination), distinct from ICH-GCP's cross-
+    jurisdiction scientific/ethical standard.
 
 Each fetched document is tagged with its jurisdiction at THIS stage,
 not later — this is what lets chunk_and_embed.py propagate jurisdiction
-metadata all the way through to Pinecone.
+metadata all the way through to Pinecone, and what makes
+retrieval/pinecone_store.py's $in filter fix meaningful (ICH-tagged
+content matches BOTH FDA and EMA queries; EMA-tagged content like the
+EU CTR matches only EMA/both queries).
 
 FIXES applied via real testing, not just code review:
   1. eCFR's versioner API rejects the literal word "current" in the URL
@@ -103,13 +105,18 @@ ICH_SOURCES = [
     ),
 ]
 
-# KNOWN GAP, still not resolved in this pass: the EU Clinical Trials
-# Regulation itself (beyond ICH-GCP, which is now covered above) doesn't
-# have a source wired up yet. ICH-GCP covers a meaningful portion of
-# what an EMA-jurisdiction compliance check needs, but EU-specific
-# regulatory requirements beyond ICH-GCP remain a real gap.
-EU_SOURCES_TODO = [
-    "EU Clinical Trials Regulation (EU) No 536/2014 — needs source URL + parse_pdf.py reuse",
+# EU Clinical Trials Regulation — official EUR-Lex consolidated PDF.
+# Tagged "EMA", NOT "ICH" — this is EU-specific procedural/legal
+# framework (CTIS submission, multi-Member-State coordination,
+# EudraVigilance safety reporting), distinct from ICH-GCP's broadly-
+# applicable scientific/ethical standard.
+EU_SOURCES = [
+    RegulationSource(
+        name="Regulation (EU) No 536/2014 — EU Clinical Trials Regulation",
+        url="https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32014R0536",
+        jurisdiction="EMA",
+        output_filename="eu_ctr_536_2014.pdf",
+    ),
 ]
 
 
@@ -168,16 +175,42 @@ def fetch_all_ich_sources() -> list[Path]:
     return written_paths
 
 
+def fetch_all_eu_sources() -> list[Path]:
+    """Same binary-write pattern as fetch_all_ich_sources(). A custom
+    User-Agent header is included defensively — some EU government sites
+    reject requests with no User-Agent at all; verify this is actually
+    necessary once run for real, and remove if not."""
+    written_paths = []
+
+    for source in EU_SOURCES:
+        output_path = OUTPUT_DIR / source.output_filename
+        logger.info(f"Fetching {source.name} from {source.url}")
+
+        try:
+            response = requests.get(
+                source.url,
+                timeout=60,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            output_path.write_bytes(response.content)
+            written_paths.append(output_path)
+            logger.info(f"Saved {source.name} -> {output_path}")
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch {source.name}: {e}")
+
+        time.sleep(REQUEST_DELAY_SECONDS)
+
+    return written_paths
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     fda_paths = fetch_all_fda_sources()
     ich_paths = fetch_all_ich_sources()
+    eu_paths = fetch_all_eu_sources()
 
-    print(f"\nFetched {len(fda_paths)} FDA source(s) + {len(ich_paths)} ICH source(s) to {OUTPUT_DIR}/")
-
-    if EU_SOURCES_TODO:
-        logger.warning(
-            f"NOT FETCHED (known gap, deferred): {EU_SOURCES_TODO} — "
-            f"EU-specific regulation beyond ICH-GCP is still missing from the corpus."
-        )
-        print(f"NOTE: EU-specific regulation (beyond ICH-GCP) is NOT yet fetched — see EU_SOURCES_TODO in this file.")
+    print(
+        f"\nFetched {len(fda_paths)} FDA + {len(ich_paths)} ICH + "
+        f"{len(eu_paths)} EU source(s) to {OUTPUT_DIR}/"
+    )
