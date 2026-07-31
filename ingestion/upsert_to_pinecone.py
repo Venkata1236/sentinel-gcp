@@ -7,6 +7,11 @@ Uses Pinecone's hosted embedding model at upsert time (via upsert_records,
 not raw vector upsert) — matching the embedding-model decision resolved
 in chunk_and_embed.py: no separate embedding API call needed, Pinecone
 embeds the text itself.
+
+Chunk IDs are deterministic (see chunk_and_embed.py's
+_make_deterministic_chunk_id) — same logical chunk always resolves to
+the same ID, so re-running this script after a corpus refresh overwrites
+existing vectors in place rather than duplicating them.
 """
 import logging
 
@@ -26,7 +31,7 @@ def upsert_all_chunks():
     index = client.Index(settings.PINECONE_INDEX_NAME)
 
     xml_chunks = chunk_all_regulations()
-    pdf_chunks = chunk_all_pdf_regulations()
+    pdf_chunks = chunk_all_pdf_regulations()  # covers ICH (PDF) + EU CTR (HTML) — see chunk_and_embed.py
     all_chunks = xml_chunks + pdf_chunks
 
     if not all_chunks:
