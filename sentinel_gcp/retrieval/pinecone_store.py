@@ -1,11 +1,23 @@
 """
 PineconeStore — production vector store implementation.
 
-Uses Pinecone's native metadata filtering for jurisdiction scoping —
-a query with jurisdiction_filter="FDA" only searches chunks tagged
-jurisdiction=FDA at the INDEX level, not via application-side
-post-filtering. This is the specific reason Pinecone was chosen over
-FAISS for production (see ARCHITECTURE.md's Pinecone rationale).
+Jurisdiction-scoped retrieval, resolved per real-document testing
+(ARCT-165-01 surfaced the "unknown" jurisdiction case — neither IND nor
+EudraCT found):
+
+  FDA     -> search FDA + ICH content
+  EMA     -> search EMA + ICH content
+  both    -> search FDA + EMA + ICH (a CONFIRMED dual-filed trial —
+             both identifiers were actually found, this is a fact,
+             not uncertainty)
+  unknown -> search ICH ONLY (neither identifier found — genuine
+             uncertainty). Deliberately does NOT fall back to searching
+             FDA+EMA: citing a specific national regulation (e.g. 21 CFR
+             312.32) on a trial whose jurisdiction was never confirmed
+             risks a confidently-wrong citation, not just an imprecise
+             one — the one failure mode this whole project is built to
+             prevent. ICH-GCP is always safe to include since it applies
+             regardless of which national framework governs.
 """
 import logging
 
@@ -28,22 +40,19 @@ class PineconeStore(VectorStore):
         jurisdiction_filter: str | None = None,
         top_k: int = 3,
     ) -> list[RetrievedChunk]:
-        pinecone_filter = None
-        if jurisdiction_filter and jurisdiction_filter not in ("both", "unknown"):
-            # FIX: use $in, not $eq — a chunk tagged jurisdiction-agnostic
-            # ("ICH") must ALSO match a specific-jurisdiction query (FDA or
-            # EMA), since ICH-GCP applies across both. An exact-match filter
-            # would silently exclude ICH-GCP content from every jurisdiction-
-            # specific query, which is wrong — ICH-GCP is exactly the kind
-            # of broadly-applicable guidance a compliance check needs
-            # regardless of which specific jurisdiction a trial falls under.
-            pinecone_filter = {"jurisdiction": {"$in": [jurisdiction_filter, "ICH"]}}
+        allowed_jurisdictions = self._resolve_allowed_jurisdictions(jurisdiction_filter)
+        pinecone_filter = (
+            {"jurisdiction": {"$in": allowed_jurisdictions}}
+            if allowed_jurisdictions is not None
+            else None
+        )
 
         results = self._index.search(
             namespace="",
             query={"inputs": {"text": query_text}, "top_k": top_k},
             filter=pinecone_filter,
         )
+
         chunks = [
             RetrievedChunk(
                 chunk_id=match["id"],
@@ -54,5 +63,26 @@ class PineconeStore(VectorStore):
             )
             for match in results.get("matches", [])
         ]
-        logger.info(f"PineconeStore: query returned {len(chunks)} chunk(s), filter={pinecone_filter}")
+        logger.info(
+            f"PineconeStore: query returned {len(chunks)} chunk(s), "
+            f"jurisdiction_filter={jurisdiction_filter}, allowed={allowed_jurisdictions}"
+        )
         return chunks
+
+    @staticmethod
+    def _resolve_allowed_jurisdictions(jurisdiction_filter: str | None) -> list[str] | None:
+        """Maps a trial's determined jurisdiction to the set of
+        regulation-jurisdiction tags that should be searched. Returns
+        None for no filtering at all (used only if jurisdiction_filter
+        itself is None, i.e. not yet determined at all)."""
+        if jurisdiction_filter is None:
+            return None
+        if jurisdiction_filter == "FDA":
+            return ["FDA", "ICH"]
+        if jurisdiction_filter == "EMA":
+            return ["EMA", "ICH"]
+        if jurisdiction_filter == "both":
+            return ["FDA", "EMA", "ICH"]
+        # "unknown" — neither IND nor EudraCT found. Deliberately narrow,
+        # not broad: ICH-GCP only, per module docstring above.
+        return ["ICH"]
