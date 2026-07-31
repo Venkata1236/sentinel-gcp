@@ -54,7 +54,7 @@ async def analyze_protocol(
     logger.info(f"analyze_protocol: {run_id} — saved upload as {saved_path}")
     _status_store.set_status(run_id, "PENDING", detail="Upload received, queued for processing")
 
-    state = initial_state(raw_pdf_path=str(saved_path))
+    state = initial_state(raw_pdf_path=str(saved_path), run_id=run_id)
     state["run_id"] = run_id
 
     background_tasks.add_task(_run_graph_background, graph, state, run_id)
