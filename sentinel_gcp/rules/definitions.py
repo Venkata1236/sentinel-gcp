@@ -9,6 +9,14 @@ identically regardless of whether the source document called something
 
 Adding a new rule means adding a new Rule object to RULES below — nothing
 else needs to change (engine.py just iterates this list).
+
+RULE-007 (added after real-document testing): ARCT-165-01, a real
+protocol tested in this project, surfaced the "unknown" jurisdiction
+case — neither an IND number nor a EudraCT number was found, so
+jurisdiction cannot be determined. Paired with pinecone_store.py's fix
+scoping retrieval to ICH-only in that case, this rule makes the
+uncertainty a visible, high-severity finding in every report, rather
+than a silent retrieval-scoping decision a reviewer would never see.
 """
 from dataclasses import dataclass
 from typing import Callable
@@ -58,6 +66,10 @@ def _no_exclusion_criteria(extraction: ProtocolExtraction, jurisdiction: str) ->
 
 def _no_primary_endpoint(extraction: ProtocolExtraction, jurisdiction: str) -> bool:
     return not extraction.primary_endpoint
+
+
+def _jurisdiction_unknown(extraction: ProtocolExtraction, jurisdiction: str) -> bool:
+    return jurisdiction == "unknown"
 
 
 RULES: list[Rule] = [
@@ -114,5 +126,18 @@ RULES: list[Rule] = [
         severity="high",
         impact="Every interventional trial must define a primary endpoint; a missing extraction here needs verification before trusting anything else in the report.",
         recommendation="Manually verify the primary endpoint is stated in the source document.",
+    ),
+    Rule(
+        rule_id="RULE-007",
+        description="Jurisdiction could not be determined from extracted IND/EudraCT fields",
+        condition=_jurisdiction_unknown,
+        regulation_reference="N/A — process gap, not a regulatory citation",
+        severity="high",
+        impact=(
+            "Compliance checks were limited to jurisdiction-agnostic ICH-GCP content only. "
+            "FDA- or EMA-specific requirements were NOT checked, since which framework "
+            "applies could not be determined from the extracted IND/EudraCT fields."
+        ),
+        recommendation="Manually confirm trial jurisdiction before relying on this report's compliance findings.",
     ),
 ]
