@@ -113,7 +113,7 @@ ICH_SOURCES = [
 EU_SOURCES = [
     RegulationSource(
         name="Regulation (EU) No 536/2014 — EU Clinical Trials Regulation",
-        url="https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32014R0536",
+        url="http://publications.europa.eu/resource/celex/32014R0536",
         jurisdiction="EMA",
         output_filename="eu_ctr_536_2014.html",
     ),
@@ -174,10 +174,14 @@ def fetch_all_ich_sources() -> list[Path]:
 
 
 def fetch_all_eu_sources() -> list[Path]:
-    """Fetches EUR-Lex's HTML page directly (NOT the PDF endpoint, which
-    returns HTTP 202 + 0 bytes on a synchronous request since PDFs are
-    generated asynchronously there). Text write, same encoding handling
-    as the FDA path since this is also text content, not binary."""
+    """Uses the EU Publications Office's CELLAR API — a machine-readable
+    content retrieval service on a SEPARATE domain (publications.europa.eu)
+    from the bot-protected interactive EUR-Lex site (eur-lex.europa.eu).
+    This is the actual backend service EUR-Lex's own website is built on,
+    purpose-built for automated access via content negotiation — not a
+    scraping workaround. Confirmed via research after EUR-Lex's
+    interactive page returned persistent HTTP 202 bot-detection responses
+    that no header/retry combination resolved."""
     written_paths = []
 
     for source in EU_SOURCES:
@@ -188,13 +192,16 @@ def fetch_all_eu_sources() -> list[Path]:
             response = requests.get(
                 source.url,
                 timeout=60,
-                headers={"User-Agent": "Mozilla/5.0"},
+                headers={
+                    "Accept": "text/html",
+                    "Accept-Language": "eng",
+                },
             )
             response.raise_for_status()
             response.encoding = "utf-8"
             output_path.write_text(response.text, encoding="utf-8")
             written_paths.append(output_path)
-            logger.info(f"Saved {source.name} -> {output_path}")
+            logger.info(f"Saved {source.name} -> {output_path} ({len(response.text)} chars)")
         except requests.RequestException as e:
             logger.error(f"Failed to fetch {source.name}: {e}")
 
