@@ -15,6 +15,13 @@ overlap) is identical regardless of source format.
 Embedding itself happens at Pinecone's end (see upsert_to_pinecone.py)
 using Pinecone's hosted embedding model.
 
+Chunk IDs are DETERMINISTIC (sha256 of citation + section_ref + text
+prefix), not random UUIDs — this makes re-running ingestion idempotent.
+A random UUID would give every chunk_and_embed.py run fresh IDs, so
+re-ingesting after a regulation refresh would duplicate vectors in
+Pinecone rather than overwrite them in place. Caught via code review
+before the first real upsert run, not by runtime testing.
+
 Chunking strategy:
   - PRIMARY split boundary: natural subsection structure (eCFR's <P>
     tags, Docling's detected Sections for PDFs, or paragraph-level tags
@@ -24,9 +31,9 @@ Chunking strategy:
     in that fallback case
   - Overlap: ~50-75 tokens (~15-20% of target)
 """
+import hashlib
 import logging
 import re
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -60,6 +67,19 @@ class RegulationChunk:
     regulation_source: str      # e.g. "21 CFR 312.32" or "ICH E6(R3) GCP"
     jurisdiction: str            # "FDA" | "ICH" | "EMA"
     section_ref: str | None = None
+
+
+def _make_deterministic_chunk_id(citation: str, section_ref: str | None, text: str) -> str:
+    """Same logical chunk (same regulation, same section, same text)
+    always produces the same ID across runs — makes Pinecone upsert
+    genuinely idempotent (upsert overwrites by ID; random IDs would
+    duplicate instead). Includes a slice of the text itself, not just
+    section_ref, since _split_long_paragraph can produce multiple
+    chunks sharing the same section_ref ('(c)(1) (part 1)', '(c)(1)
+    (part 2)') — the text prefix disambiguates those."""
+    key = f"{citation}|{section_ref or ''}|{text[:80]}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return f"chunk-{digest}"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -187,9 +207,8 @@ def chunk_html_regulation(html_path: Path, citation: str, jurisdiction: str) -> 
 
 def chunk_all_pdf_regulations(input_dir: Path = INPUT_DIR) -> list[RegulationChunk]:
     """Despite the name (kept for compatibility with upsert_to_pinecone.py's
-    existing call), this now covers BOTH PDF and HTML non-XML sources —
-    ICH-GCP (PDF) and EU CTR (HTML). Any file present on disk but missing
-    from either metadata map is flagged with a warning, not silently skipped."""
+    existing call), this covers BOTH PDF and HTML non-XML sources —
+    ICH-GCP (PDF) and EU CTR (HTML)."""
     all_chunks: list[RegulationChunk] = []
 
     for filename, (citation, jurisdiction) in _PDF_SOURCE_METADATA.items():
@@ -237,13 +256,15 @@ def _group_paragraphs_into_chunks(
 
     def flush_buffer():
         if buffer_text.strip():
+            final_text = buffer_text.strip()
+            final_ref = ", ".join(buffer_refs) if buffer_refs else None
             chunks.append(
                 RegulationChunk(
-                    chunk_id=f"chunk-{uuid.uuid4().hex[:10]}",
-                    text=buffer_text.strip(),
+                    chunk_id=_make_deterministic_chunk_id(citation, final_ref, final_text),
+                    text=final_text,
                     regulation_source=citation,
                     jurisdiction=jurisdiction,
-                    section_ref=", ".join(buffer_refs) if buffer_refs else None,
+                    section_ref=final_ref,
                 )
             )
 
@@ -270,14 +291,15 @@ def _split_long_paragraph(text: str, section_ref: str, citation: str, jurisdicti
     start = 0
     while start < len(text):
         end = start + CHUNK_TARGET_CHARS
-        piece = text[start:end]
+        piece = text[start:end].strip()
+        piece_ref = f"{section_ref} (part {len(pieces) + 1})"
         pieces.append(
             RegulationChunk(
-                chunk_id=f"chunk-{uuid.uuid4().hex[:10]}",
-                text=piece.strip(),
+                chunk_id=_make_deterministic_chunk_id(citation, piece_ref, piece),
+                text=piece,
                 regulation_source=citation,
                 jurisdiction=jurisdiction,
-                section_ref=f"{section_ref} (part {len(pieces) + 1})",
+                section_ref=piece_ref,
             )
         )
         start = end - CHUNK_OVERLAP_CHARS
@@ -302,4 +324,5 @@ if __name__ == "__main__":
         print(f"\nSample chunk:\n  source: {all_chunks[0].regulation_source}")
         print(f"  jurisdiction: {all_chunks[0].jurisdiction}")
         print(f"  section_ref: {all_chunks[0].section_ref}")
+        print(f"  chunk_id: {all_chunks[0].chunk_id}")
         print(f"  text (first 200 chars): {all_chunks[0].text[:200]}")
