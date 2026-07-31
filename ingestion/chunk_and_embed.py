@@ -3,9 +3,10 @@ ingestion/chunk_and_embed.py — section-aware chunking + embedding prep.
 
 Two source paths, one shared chunking core:
   - chunk_all_regulations() — processes eCFR XML files (FDA sources)
-  - chunk_pdf_regulation() — processes a single PDF (ICH-GCP, and any
-    future EU-specific source), reusing parse_pdf.py's Docling-based
-    parser (genuine code reuse, not a second parsing implementation)
+  - chunk_pdf_regulation() — processes a single regulation PDF (ICH-GCP,
+    EU CTR, or any future PDF source), reusing parse_pdf.py's
+    Docling-based parser (genuine code reuse, not a second parsing
+    implementation)
 
 Both paths converge on _group_paragraphs_into_chunks() — the actual
 chunking decision (merge short paragraphs, split oversized ones with
@@ -45,12 +46,21 @@ CHARS_PER_TOKEN_ESTIMATE = 4
 CHUNK_TARGET_CHARS = CHUNK_TARGET_TOKENS * CHARS_PER_TOKEN_ESTIMATE
 CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * CHARS_PER_TOKEN_ESTIMATE
 
+# Maps a fetched PDF filename to (citation, jurisdiction). New PDF
+# sources (future EU implementing regulations, other ICH guidelines,
+# etc.) just need an entry added here — chunk_all_pdf_regulations()
+# below loops over this automatically, no new function needed per source.
+_PDF_SOURCE_METADATA: dict[str, tuple[str, str]] = {
+    "ich_e6_r3_gcp.pdf": ("ICH E6(R3) GCP", "ICH"),
+    "eu_ctr_536_2014.pdf": ("Regulation (EU) No 536/2014", "EMA"),
+}
+
 
 @dataclass
 class RegulationChunk:
     chunk_id: str
     text: str
-    regulation_source: str      # e.g. "21 CFR 312.32" or "ICH E6(R3)"
+    regulation_source: str      # e.g. "21 CFR 312.32" or "ICH E6(R3) GCP"
     jurisdiction: str            # "FDA" | "ICH" | "EMA"
     section_ref: str | None = None   # e.g. "(c)(1)" — provenance within the source section
 
@@ -111,7 +121,7 @@ def _extract_paragraph_texts_from_xml(root) -> list[tuple[str, str]]:
 
 
 # ─────────────────────────────────────────────────────────────────
-# PDF path (ICH-GCP, and any future EU-specific source)
+# PDF path (ICH-GCP, EU CTR, and any future PDF source)
 # ─────────────────────────────────────────────────────────────────
 
 def chunk_pdf_regulation(pdf_path: Path, citation: str, jurisdiction: str) -> list[RegulationChunk]:
@@ -135,18 +145,30 @@ def chunk_pdf_regulation(pdf_path: Path, citation: str, jurisdiction: str) -> li
 
 
 def chunk_all_pdf_regulations(input_dir: Path = INPUT_DIR) -> list[RegulationChunk]:
-    """Convenience wrapper matching chunk_all_regulations()'s shape, for
-    the known PDF sources fetched by fetch_regulations.py. Currently
-    just ICH-GCP; EU-specific sources would be added here once fetched."""
+    """Processes every known PDF source present in input_dir, using
+    _PDF_SOURCE_METADATA to look up each file's citation and
+    jurisdiction — no longer hardcoded to a single ICH-only path.
+    A PDF present on disk but missing from _PDF_SOURCE_METADATA is
+    skipped with a warning, not silently ignored."""
     all_chunks: list[RegulationChunk] = []
 
-    ich_path = input_dir / "ich_e6_r3_gcp.pdf"
-    if ich_path.exists():
-        all_chunks.extend(
-            chunk_pdf_regulation(ich_path, citation="ICH E6(R3) GCP", jurisdiction="ICH")
-        )
-    else:
-        logger.warning(f"{ich_path} not found — run fetch_regulations.py's fetch_all_ich_sources() first")
+    for filename, (citation, jurisdiction) in _PDF_SOURCE_METADATA.items():
+        pdf_path = input_dir / filename
+        if pdf_path.exists():
+            all_chunks.extend(chunk_pdf_regulation(pdf_path, citation, jurisdiction))
+        else:
+            logger.warning(f"{pdf_path} not found — run fetch_regulations.py first")
+
+    # Flag any PDF present on disk that ISN'T in our metadata map —
+    # silent gaps are worse than a loud reminder to add the mapping.
+    known_filenames = set(_PDF_SOURCE_METADATA.keys())
+    for pdf_path in input_dir.glob("*.pdf"):
+        if pdf_path.name not in known_filenames:
+            logger.warning(
+                f"{pdf_path.name} exists on disk but has no entry in "
+                f"_PDF_SOURCE_METADATA — it will NOT be chunked or upserted "
+                f"until a (citation, jurisdiction) mapping is added"
+            )
 
     return all_chunks
 
@@ -233,8 +255,15 @@ if __name__ == "__main__":
     pdf_chunks = chunk_all_pdf_regulations()
     all_chunks = xml_chunks + pdf_chunks
 
-    print(f"\nProduced {len(xml_chunks)} chunk(s) from XML (FDA) + {len(pdf_chunks)} chunk(s) from PDF (ICH) = {len(all_chunks)} total.")
+    print(
+        f"\nProduced {len(xml_chunks)} chunk(s) from XML (FDA) + "
+        f"{len(pdf_chunks)} chunk(s) from PDF (ICH + EU) = {len(all_chunks)} total."
+    )
     if all_chunks:
+        by_jurisdiction = {}
+        for c in all_chunks:
+            by_jurisdiction[c.jurisdiction] = by_jurisdiction.get(c.jurisdiction, 0) + 1
+        print(f"Breakdown by jurisdiction: {by_jurisdiction}")
         print(f"\nSample chunk:\n  source: {all_chunks[0].regulation_source}")
         print(f"  jurisdiction: {all_chunks[0].jurisdiction}")
         print(f"  section_ref: {all_chunks[0].section_ref}")
