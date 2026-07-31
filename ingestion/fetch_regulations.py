@@ -196,13 +196,13 @@ def fetch_all_eu_sources() -> list[Path]:
 
         try:
             response = requests.get(
-                source.url,
-                timeout=60,
-                headers={
-                    "Accept": "text/html",
-                    "Accept-Language": "eng",
-                },
-            )
+            source.url,
+            timeout=60,
+            headers={
+                "Accept": "application/xhtml+xml, text/html, application/pdf",
+                "Accept-Language": "eng",
+            },
+        )
             print(
                 f"DEBUG: status={response.status_code}, content-length={len(response.content)}, "
                 f"content-type={response.headers.get('Content-Type')}, "
