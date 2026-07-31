@@ -1,6 +1,7 @@
 """
-eval/evaluators/retrieval_metrics.py — retrieval@k for Agent 2's
-regulatory retrieval, measured against hand-labeled relevant chunks.
+eval/evaluators/retrieval_metrics.py — precision/recall@k and MRR for
+Agent 2's regulatory retrieval, measured against hand-labeled relevant
+chunks.
 
 Given a query (e.g. "SAE reporting timeline requirement") and the set
 of chunk_ids a human labeled as genuinely relevant, checks how many of
@@ -11,8 +12,22 @@ Agent 1's extraction was correct.
 
 Ground truth here is a mapping: query -> set of chunk_ids that SHOULD
 be retrieved. Building this requires knowing the actual chunk_ids in
-your Pinecone index — see build_relevance_ground_truth() below for how
-to bootstrap this from a real upsert run.
+your Pinecone index — see build_relevance_ground_truth_template() below
+for how to bootstrap this from a real upsert run.
+
+Metric scope:
+  - Precision@k / Recall@k: UNORDERED — treats the retrieved list as a
+    set, doesn't care whether a relevant chunk was ranked 1st or 5th.
+  - Mean Reciprocal Rank (MRR): rank-AWARE — rewards a relevant chunk
+    appearing earlier in the retrieved list. Added at ZERO extra
+    ground-truth labeling cost, since it only needs the same binary
+    relevant/not-relevant set precision/recall@k already requires (just
+    the rank of the FIRST relevant hit, not a full relevance ordering).
+  - NDCG: deliberately NOT implemented. Unlike MRR, NDCG requires
+    GRADED relevance judgments (this chunk is "highly relevant," that
+    one "somewhat relevant") — a genuinely more expensive ground-truth
+    labeling task, not just a code addition. Revisit only if MRR proves
+    insufficient once run against real retrieval data.
 """
 import logging
 from dataclasses import dataclass
@@ -25,6 +40,7 @@ class RetrievalMetrics:
     query: str
     precision_at_k: float
     recall_at_k: float
+    reciprocal_rank: float
     retrieved_chunk_ids: list[str]
     relevant_chunk_ids: list[str]
     matched_chunk_ids: list[str]
@@ -35,44 +51,50 @@ def evaluate_retrieval(
     retrieved_chunk_ids: list[str],
     relevant_chunk_ids: set[str],
 ) -> RetrievalMetrics:
-    """Core retrieval@k computation. retrieved_chunk_ids is ordered
-    (as returned by the vector store, best-match first) but this
-    computes unordered precision/recall@k — NOT rank-sensitive metrics
-    like MRR or NDCG. That's a deliberate scope decision: unordered
-    precision/recall@k is simpler to hand-label ground truth for (you
-    only need to know WHICH chunks are relevant, not their ideal rank
-    order) and is sufficient for validating that retrieve.py's
-    jurisdiction filtering + query construction are working — rank-
-    sensitive metrics would be the next layer of rigor if unordered
-    precision/recall@k turns out insufficient once run against real data."""
+    """Core retrieval evaluation for one query. retrieved_chunk_ids is
+    ORDERED (as returned by the vector store, best-match first) — used
+    for reciprocal_rank; precision/recall@k treat it as an unordered set."""
     retrieved_set = set(retrieved_chunk_ids)
     matched = retrieved_set & relevant_chunk_ids
 
     precision = len(matched) / len(retrieved_set) if retrieved_set else 0.0
     recall = len(matched) / len(relevant_chunk_ids) if relevant_chunk_ids else 0.0
+    rr = _reciprocal_rank(retrieved_chunk_ids, relevant_chunk_ids)
 
     return RetrievalMetrics(
         query=query,
         precision_at_k=round(precision, 3),
         recall_at_k=round(recall, 3),
+        reciprocal_rank=rr,
         retrieved_chunk_ids=retrieved_chunk_ids,
         relevant_chunk_ids=sorted(relevant_chunk_ids),
         matched_chunk_ids=sorted(matched),
     )
 
 
-def evaluate_retrieval_suite(
-    test_cases: list[dict],
-) -> dict:
+def _reciprocal_rank(retrieved_chunk_ids: list[str], relevant_chunk_ids: set[str]) -> float:
+    """1/rank of the FIRST relevant chunk in the retrieved (ordered)
+    list, or 0.0 if none of the retrieved chunks are relevant. Uses the
+    SAME ground truth (a flat relevant/not-relevant set) as
+    precision/recall@k — no additional labeling burden."""
+    for rank, chunk_id in enumerate(retrieved_chunk_ids, start=1):
+        if chunk_id in relevant_chunk_ids:
+            return round(1.0 / rank, 3)
+    return 0.0
+
+
+def evaluate_retrieval_suite(test_cases: list[dict]) -> dict:
     """Runs evaluate_retrieval() across multiple query/ground-truth pairs
-    and aggregates. test_cases shape:
+    and aggregates, including Mean Reciprocal Rank across all queries.
+    test_cases shape:
         [{"query": str, "retrieved_chunk_ids": list[str], "relevant_chunk_ids": set[str]}, ...]
-    This is what run_eval.py (not yet built) will call across your
-    full ground-truth query set, not just one query at a time."""
+    This is what run_eval.py (not yet built) will call across your full
+    ground-truth query set, not just one query at a time."""
     results = [evaluate_retrieval(**case) for case in test_cases]
 
     avg_precision = sum(r.precision_at_k for r in results) / len(results) if results else 0.0
     avg_recall = sum(r.recall_at_k for r in results) / len(results) if results else 0.0
+    mrr = sum(r.reciprocal_rank for r in results) / len(results) if results else 0.0
 
     zero_recall_queries = [r.query for r in results if r.recall_at_k == 0.0]
     if zero_recall_queries:
@@ -85,6 +107,7 @@ def evaluate_retrieval_suite(
     return {
         "average_precision_at_k": round(avg_precision, 3),
         "average_recall_at_k": round(avg_recall, 3),
+        "mean_reciprocal_rank": round(mrr, 3),
         "per_query_results": results,
         "zero_recall_queries": zero_recall_queries,
     }
