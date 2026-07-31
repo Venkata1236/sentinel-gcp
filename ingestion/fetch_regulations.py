@@ -31,17 +31,16 @@ FIXES applied via real testing, not just code review:
      requests was guessing the wrong charset. response.encoding is now
      forced to "utf-8" before reading .text.
   3. EUR-Lex's interactive site (eur-lex.europa.eu) has Akamai-style bot
-     protection — every request, including the PDF endpoint and the
-     plain HTML page, returned persistent HTTP 202 (Accepted) with an
-     empty body for automated requests, confirmed via debug diagnostics.
-     No header/retry combination resolved it — this is a genuine bot
-     wall, not a code bug.
-  4. Fixed by switching to the EU Publications Office's CELLAR API
-     (publications.europa.eu) — a SEPARATE, purpose-built machine-
-     readable retrieval service, the actual backend EUR-Lex's own site
-     is built on. Its RESTful resource URIs require a ?language={code}
-     query parameter to resolve — a bare CELEX URI with no language
-     specified returns 404, also confirmed via real testing.
+     protection — every request returned persistent HTTP 202 (Accepted)
+     with an empty body for automated requests, confirmed via debug
+     diagnostics. No header/retry combination resolved it.
+  4. Switched to the EU Publications Office's CELLAR API
+     (publications.europa.eu) — a separate, purpose-built machine-
+     readable retrieval service. A ?language= query parameter caused a
+     400 error: "Invalid content type CONTENT_STREAM for WORK [...]
+     without language" — CELLAR expects language negotiation via the
+     Accept-Language HTTP HEADER, not a query parameter. Confirmed by
+     reading the actual 400 error response body.
 """
 import logging
 import time
@@ -112,15 +111,16 @@ ICH_SOURCES = [
     ),
 ]
 
-# EU Clinical Trials Regulation — via CELLAR, NOT the bot-protected
-# interactive EUR-Lex site (see fixes #3/#4 above). ?language=eng is
-# REQUIRED — a bare CELEX resource URI returns 404 without it. Tagged
-# "EMA", NOT "ICH" — EU-specific procedural/legal framework, distinct
-# from ICH-GCP's broadly-applicable scientific/ethical standard.
+# EU Clinical Trials Regulation — via CELLAR. Bare resource URI, NO
+# ?language= query param (that caused a 400 — see fix #4 above).
+# Language is negotiated via the Accept-Language header instead, set
+# in fetch_all_eu_sources() below. Tagged "EMA", NOT "ICH" — EU-specific
+# procedural/legal framework, distinct from ICH-GCP's broadly-applicable
+# scientific/ethical standard.
 EU_SOURCES = [
     RegulationSource(
         name="Regulation (EU) No 536/2014 — EU Clinical Trials Regulation",
-        url="http://publications.europa.eu/resource/celex/32014R0536?language=eng",
+        url="http://publications.europa.eu/resource/celex/32014R0536",
         jurisdiction="EMA",
         output_filename="eu_ctr_536_2014.html",
     ),
@@ -183,12 +183,11 @@ def fetch_all_ich_sources() -> list[Path]:
 def fetch_all_eu_sources() -> list[Path]:
     """Uses the EU Publications Office's CELLAR API — a machine-readable
     content retrieval service on a SEPARATE domain (publications.europa.eu)
-    from the bot-protected interactive EUR-Lex site (eur-lex.europa.eu).
-    This is the actual backend service EUR-Lex's own website is built on,
-    purpose-built for automated access. Requires ?language=eng in the URL
-    to resolve (see fix #4 in module docstring). Debug print retained
-    given how many attempts this source has needed — remove once
-    confirmed stable across a few real runs."""
+    from the bot-protected interactive EUR-Lex site. Language is
+    negotiated via the Accept-Language header (NOT a ?language= query
+    param — that caused a 400, confirmed by reading the actual error
+    response body). Debug prints retained given how many attempts this
+    source has needed — safe to remove once confirmed stable."""
     written_paths = []
 
     for source in EU_SOURCES:
@@ -199,13 +198,18 @@ def fetch_all_eu_sources() -> list[Path]:
             response = requests.get(
                 source.url,
                 timeout=60,
-                headers={"Accept": "text/html"},
+                headers={
+                    "Accept": "text/html",
+                    "Accept-Language": "eng",
+                },
             )
             print(
                 f"DEBUG: status={response.status_code}, content-length={len(response.content)}, "
                 f"content-type={response.headers.get('Content-Type')}, "
                 f"redirected={response.history}, final_url={response.url}"
             )
+            if response.status_code != 200:
+                print(f"DEBUG: error body: {response.text}")
             response.raise_for_status()
             response.encoding = "utf-8"
             output_path.write_text(response.text, encoding="utf-8")
