@@ -8,6 +8,11 @@ this project: it's the exact bug found during design (an EudraCT-only
 trial with no IND number would incorrectly trigger RULE-001 if
 jurisdiction gating were missing or broken). If this test ever starts
 failing, it means the jurisdiction-gating fix has regressed.
+
+The RULE-007 tests, added after ARCT-165-01 (a real protocol tested in
+this project) surfaced the "unknown" jurisdiction case, confirm the
+mandatory-uncertainty-flag fix: jurisdiction unknown must always raise
+RULE-007, and must NOT raise it when jurisdiction is confidently known.
 """
 import pytest
 
@@ -133,3 +138,49 @@ def test_all_rules_pass_on_well_formed_fda_trial():
 
     failed = [r for r in results if not r.passed]
     assert failed == [], f"Expected 0 flags on a well-formed trial, got: {[r.rule_id for r in failed]}"
+
+
+def test_rule_007_fires_when_jurisdiction_unknown():
+    """ARCT-165-01's real shape — neither IND nor EudraCT found.
+    RULE-007 must fire, making the uncertainty a visible, high-severity
+    finding rather than a silent retrieval-scoping decision."""
+    extraction = _make_extraction(ind_value=None, eudract_value=None)
+    results = run_rules(extraction, jurisdiction="unknown")
+
+    rule_007_result = next(r for r in results if r.rule_id == "RULE-007")
+    assert rule_007_result.passed is False
+    assert rule_007_result.flag is not None
+    assert rule_007_result.flag.severity == "high"
+    assert "ICH-GCP" in rule_007_result.flag.impact
+
+
+def test_rule_007_does_not_fire_when_jurisdiction_known():
+    """RULE-007 must stay silent for both FDA and EMA — it should only
+    ever fire on genuine uncertainty ('unknown'), not on every run."""
+    fda_extraction = _make_extraction(ind_value="122,912", eudract_value=None)
+    fda_results = run_rules(fda_extraction, jurisdiction="FDA")
+    rule_007_fda = next(r for r in fda_results if r.rule_id == "RULE-007")
+    assert rule_007_fda.passed is True
+
+    ema_extraction = _make_extraction(ind_value=None, eudract_value="2021-001541-13")
+    ema_results = run_rules(ema_extraction, jurisdiction="EMA")
+    rule_007_ema = next(r for r in ema_results if r.rule_id == "RULE-007")
+    assert rule_007_ema.passed is True
+
+
+def test_rule_007_fires_alongside_rules_001_and_002_correctly_skipping():
+    """Sanity check that all three interact correctly on the SAME
+    unknown-jurisdiction case: RULE-007 fires (uncertainty flagged),
+    while RULE-001/002 correctly stay silent (can't check jurisdiction-
+    specific requirements when jurisdiction itself is unconfirmed) —
+    this is the exact combined behavior ARCT-165-01 should produce."""
+    extraction = _make_extraction(ind_value=None, eudract_value=None)
+    results = run_rules(extraction, jurisdiction="unknown")
+
+    rule_001 = next(r for r in results if r.rule_id == "RULE-001")
+    rule_002 = next(r for r in results if r.rule_id == "RULE-002")
+    rule_007 = next(r for r in results if r.rule_id == "RULE-007")
+
+    assert rule_001.passed is True
+    assert rule_002.passed is True
+    assert rule_007.passed is False
