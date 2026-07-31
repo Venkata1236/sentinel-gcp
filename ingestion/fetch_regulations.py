@@ -18,11 +18,19 @@ Each fetched document is tagged with its jurisdiction at THIS stage,
 not later — this is what lets chunk_and_embed.py propagate jurisdiction
 metadata all the way through to Pinecone, which is what makes
 retrieve.py's jurisdiction-filtered queries possible at all.
+
+FIX (found via real testing, not code review): eCFR's versioner API
+rejects the literal word "current" in the URL path and requires an
+actual date. It also lags 1-2 business days behind the Federal
+Register, so requesting today's date can 404 if that day's snapshot
+doesn't exist yet — _SAFE_ECFR_DATE below uses 5 days back to safely
+clear weekends/holidays.
 """
 import logging
 import time
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 import requests
 
@@ -32,6 +40,11 @@ OUTPUT_DIR = Path("data/regulations")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 REQUEST_DELAY_SECONDS = 1.0  # basic politeness delay between requests
+
+# eCFR lags 1-2 business days behind the Federal Register — requesting
+# today's date can 404 if today's snapshot doesn't exist yet. Using a
+# date a few days back is safer than "today" or the literal word "current".
+_SAFE_ECFR_DATE = (date.today() - timedelta(days=5)).isoformat()
 
 
 @dataclass
@@ -48,25 +61,25 @@ class RegulationSource:
 FDA_SOURCES = [
     RegulationSource(
         name="21 CFR 312.23 — IND content and format",
-        url="https://www.ecfr.gov/api/versioner/v1/full/current/title-21.xml?part=312&section=312.23",
+        url=f"https://www.ecfr.gov/api/versioner/v1/full/{_SAFE_ECFR_DATE}/title-21.xml?part=312&section=312.23",
         jurisdiction="FDA",
         output_filename="21_cfr_312_23.xml",
     ),
     RegulationSource(
         name="21 CFR 312.32 — IND safety reporting",
-        url="https://www.ecfr.gov/api/versioner/v1/full/current/title-21.xml?part=312&section=312.32",
+        url=f"https://www.ecfr.gov/api/versioner/v1/full/{_SAFE_ECFR_DATE}/title-21.xml?part=312&section=312.32",
         jurisdiction="FDA",
         output_filename="21_cfr_312_32.xml",
     ),
     RegulationSource(
         name="21 CFR 312.30 — Protocol amendments",
-        url="https://www.ecfr.gov/api/versioner/v1/full/current/title-21.xml?part=312&section=312.30",
+        url=f"https://www.ecfr.gov/api/versioner/v1/full/{_SAFE_ECFR_DATE}/title-21.xml?part=312&section=312.30",
         jurisdiction="FDA",
         output_filename="21_cfr_312_30.xml",
     ),
     RegulationSource(
         name="21 CFR 312.33 — Annual reports",
-        url="https://www.ecfr.gov/api/versioner/v1/full/current/title-21.xml?part=312&section=312.33",
+        url=f"https://www.ecfr.gov/api/versioner/v1/full/{_SAFE_ECFR_DATE}/title-21.xml?part=312&section=312.33",
         jurisdiction="FDA",
         output_filename="21_cfr_312_33.xml",
     ),
