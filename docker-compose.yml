@@ -1,0 +1,35 @@
+# docker-compose.yml — local development services for Sentinel-GCP
+#
+# Currently just Postgres, used for:
+#   - LangGraph checkpointing (persistence/checkpointer.py) — durable
+#     human_review_gate pauses
+#   - EvalStore's future migration target (currently a JSONL file,
+#     per persistence/eval_store.py's docstring — this is where it
+#     would move to eventually)
+#
+# Credentials here MUST match DATABASE_URL in .env.example exactly.
+# These are local-dev-only credentials — never used in production
+# (production Postgres would be RDS or similar, with real secrets
+# management, not a hardcoded docker-compose password).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sentinel-gcp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sentinel_gcp
+      POSTGRES_PASSWORD: sentinel_gcp_dev
+      POSTGRES_DB: sentinel_gcp
+    ports:
+      - "5432:5432"
+    volumes:
+      - sentinel_gcp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel_gcp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sentinel_gcp_pgdata:
