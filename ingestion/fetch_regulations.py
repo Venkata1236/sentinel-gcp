@@ -14,17 +14,13 @@ Sources fetched (matching what the project's Phase 1 study covered):
     "ICH" (not "EMA") since this guideline applies broadly across FDA
     and EMA trials, not exclusively European ones.
   - EU Clinical Trials Regulation (EU) No 536/2014 — official EUR-Lex
-    consolidated PDF. Tagged jurisdiction "EMA", NOT "ICH" — this is
-    EU-specific procedural law (submission timelines, CTIS, multi-
-    Member-State coordination), distinct from ICH-GCP's cross-
+    HTML page. Tagged jurisdiction "EMA", NOT "ICH" — this is
+    EU-specific procedural law, distinct from ICH-GCP's cross-
     jurisdiction scientific/ethical standard.
 
 Each fetched document is tagged with its jurisdiction at THIS stage,
 not later — this is what lets chunk_and_embed.py propagate jurisdiction
-metadata all the way through to Pinecone, and what makes
-retrieval/pinecone_store.py's $in filter fix meaningful (ICH-tagged
-content matches BOTH FDA and EMA queries; EMA-tagged content like the
-EU CTR matches only EMA/both queries).
+metadata all the way through to Pinecone.
 
 FIXES applied via real testing, not just code review:
   1. eCFR's versioner API rejects the literal word "current" in the URL
@@ -34,6 +30,12 @@ FIXES applied via real testing, not just code review:
   2. eCFR responses were decoding with mojibake (Â§ instead of §) —
      requests was guessing the wrong charset. response.encoding is now
      forced to "utf-8" before reading .text.
+  3. EUR-Lex's PDF-generation endpoint returns HTTP 202 (Accepted) with
+     0 bytes on a synchronous GET — it generates PDFs asynchronously,
+     not on-demand synchronously. Switched to EUR-Lex's HTML page
+     instead, which serves the same legal text synchronously with no
+     generation delay. Confirmed via a debug print of status/content-
+     length/content-type before this fix was applied.
 """
 import logging
 import time
@@ -66,7 +68,6 @@ class RegulationSource:
 
 # eCFR sections directly relevant to protocol content and safety reporting —
 # same sections identified during the project's original Phase 1 study
-# (see ARCHITECTURE.md's referenced study phase / interview-prep material)
 FDA_SOURCES = [
     RegulationSource(
         name="21 CFR 312.23 — IND content and format",
@@ -105,17 +106,16 @@ ICH_SOURCES = [
     ),
 ]
 
-# EU Clinical Trials Regulation — official EUR-Lex consolidated PDF.
-# Tagged "EMA", NOT "ICH" — this is EU-specific procedural/legal
-# framework (CTIS submission, multi-Member-State coordination,
-# EudraVigilance safety reporting), distinct from ICH-GCP's broadly-
-# applicable scientific/ethical standard.
+# EU Clinical Trials Regulation — official EUR-Lex HTML page (NOT the
+# PDF endpoint, which is async — see fix #3 above). Tagged "EMA", NOT
+# "ICH" — EU-specific procedural/legal framework, distinct from
+# ICH-GCP's broadly-applicable scientific/ethical standard.
 EU_SOURCES = [
     RegulationSource(
         name="Regulation (EU) No 536/2014 — EU Clinical Trials Regulation",
-        url="https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=CELEX:32014R0536",
+        url="https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32014R0536",
         jurisdiction="EMA",
-        output_filename="eu_ctr_536_2014.pdf",
+        output_filename="eu_ctr_536_2014.html",
     ),
 ]
 
@@ -134,17 +134,15 @@ def fetch_all_fda_sources() -> list[Path]:
             response = requests.get(source.url, timeout=30)
             response.raise_for_status()
             response.encoding = "utf-8"  # force correct encoding; eCFR sends UTF-8 but
-                                           # requests sometimes guesses wrong without an
-                                           # explicit charset in the response headers,
-                                           # causing mojibake (Â§ instead of §)
+                                           # requests sometimes guesses wrong, causing
+                                           # mojibake (Â§ instead of §)
             output_path.write_text(response.text, encoding="utf-8")
             written_paths.append(output_path)
             logger.info(f"Saved {source.name} -> {output_path}")
         except requests.RequestException as e:
             logger.error(f"Failed to fetch {source.name}: {e}")
             # Deliberately continue to the next source rather than
-            # aborting the whole fetch run over one failed request —
-            # partial corpus refresh is better than none.
+            # aborting the whole fetch run over one failed request.
 
         time.sleep(REQUEST_DELAY_SECONDS)
 
@@ -154,7 +152,7 @@ def fetch_all_fda_sources() -> list[Path]:
 def fetch_all_ich_sources() -> list[Path]:
     """PDF sources fetch differently from eCFR's XML — raw binary write
     (response.content, not response.text), so there's no encoding
-    concern here at all (that was an XML/text-specific issue)."""
+    concern here."""
     written_paths = []
 
     for source in ICH_SOURCES:
@@ -176,10 +174,10 @@ def fetch_all_ich_sources() -> list[Path]:
 
 
 def fetch_all_eu_sources() -> list[Path]:
-    """Same binary-write pattern as fetch_all_ich_sources(). A custom
-    User-Agent header is included defensively — some EU government sites
-    reject requests with no User-Agent at all; verify this is actually
-    necessary once run for real, and remove if not."""
+    """Fetches EUR-Lex's HTML page directly (NOT the PDF endpoint, which
+    returns HTTP 202 + 0 bytes on a synchronous request since PDFs are
+    generated asynchronously there). Text write, same encoding handling
+    as the FDA path since this is also text content, not binary."""
     written_paths = []
 
     for source in EU_SOURCES:
@@ -193,7 +191,8 @@ def fetch_all_eu_sources() -> list[Path]:
                 headers={"User-Agent": "Mozilla/5.0"},
             )
             response.raise_for_status()
-            output_path.write_bytes(response.content)
+            response.encoding = "utf-8"
+            output_path.write_text(response.text, encoding="utf-8")
             written_paths.append(output_path)
             logger.info(f"Saved {source.name} -> {output_path}")
         except requests.RequestException as e:
