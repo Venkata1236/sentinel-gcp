@@ -30,17 +30,20 @@ class PineconeStore(VectorStore):
     ) -> list[RetrievedChunk]:
         pinecone_filter = None
         if jurisdiction_filter and jurisdiction_filter not in ("both", "unknown"):
-            # "both" and "unknown" mean don't restrict by jurisdiction —
-            # a dual-filed or undetermined trial's compliance check may
-            # need chunks from either framework
-            pinecone_filter = {"jurisdiction": {"$eq": jurisdiction_filter}}
+            # FIX: use $in, not $eq — a chunk tagged jurisdiction-agnostic
+            # ("ICH") must ALSO match a specific-jurisdiction query (FDA or
+            # EMA), since ICH-GCP applies across both. An exact-match filter
+            # would silently exclude ICH-GCP content from every jurisdiction-
+            # specific query, which is wrong — ICH-GCP is exactly the kind
+            # of broadly-applicable guidance a compliance check needs
+            # regardless of which specific jurisdiction a trial falls under.
+            pinecone_filter = {"jurisdiction": {"$in": [jurisdiction_filter, "ICH"]}}
 
         results = self._index.search(
             namespace="",
             query={"inputs": {"text": query_text}, "top_k": top_k},
             filter=pinecone_filter,
         )
-
         chunks = [
             RetrievedChunk(
                 chunk_id=match["id"],
