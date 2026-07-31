@@ -81,6 +81,9 @@ class GraphState(TypedDict):
     # ── Stage 12-13: human_review_gate, record_feedback ─────────
     human_decisions: List[dict]
 
+    # ── Stage 14: generate_report ────────────────────────────────
+    final_report: Optional[dict]
+    
     # ── Overall run status, updated throughout ───────────────────
     status: GraphStatus
 
@@ -90,6 +93,7 @@ def initial_state(raw_pdf_path: str) -> GraphState:
     every list starts empty, every optional starts None, so no node
     has to guess whether a field exists yet or handle a KeyError."""
     return GraphState(
+        run_id=run_id,
         raw_pdf_path=raw_pdf_path,
         document_structure=None,
         extraction_discovery=None,
@@ -103,5 +107,6 @@ def initial_state(raw_pdf_path: str) -> GraphState:
         agent_2_flags=[],
         deep_contradiction_findings=[],
         human_decisions=[],
+        final_report=None,   # NEW
         status="extracting",
     )
