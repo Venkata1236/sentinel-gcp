@@ -18,6 +18,7 @@ from anthropic import Anthropic
 from sentinel_gcp.schema.compliance import ComplianceFlag
 from sentinel_gcp.graph.state import GraphState
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +83,8 @@ def compliance_check(state: GraphState) -> GraphState:
     )
 
     raw_text = response.content[0].text
-    try:
-        raw_flags = json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning(f"compliance_check: model did not return valid JSON, got: {raw_text[:300]}")
+    raw_flags = parse_claude_json(raw_text, "compliance_check")
+    if raw_flags is None:
         raw_flags = []
 
     valid_chunk_ids = {c["chunk_id"] for c in retrieved_chunks}
