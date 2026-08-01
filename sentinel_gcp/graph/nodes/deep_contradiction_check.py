@@ -34,6 +34,7 @@ from sentinel_gcp.schema.compliance import ContradictionFinding
 from sentinel_gcp.graph.state import GraphState
 from sentinel_gcp.graph.nodes.extract_fill import _build_document_text_block
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,8 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
     )
 
     raw_text = response.content[0].text
-    try:
-        raw_findings = json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning(f"deep_contradiction_check: model did not return valid JSON, got: {raw_text[:200]}")
+    raw_findings = parse_claude_json(raw_text, "deep_contradiction_check")
+    if raw_findings is None:
         raw_findings = []
 
     findings = [
