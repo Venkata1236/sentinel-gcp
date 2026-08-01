@@ -140,7 +140,17 @@ def _parse_with_docling(pdf_path: Path) -> DocumentStructure:
                 )
             )
 
-    total_pages = doc.num_pages if hasattr(doc, "num_pages") else len(raw_text_by_page)
+    # FIX: doc.num_pages is a METHOD in this Docling version, not a property —
+    # hasattr() alone can't distinguish that, since the attribute genuinely
+    # exists (as a callable). Found via real testing, not code review — the
+    # original check silently passed hasattr but then tried arithmetic on
+    # a method object. Handles both cases (method or property) across
+    # different Docling versions.
+    if hasattr(doc, "num_pages"):
+        num_pages_attr = doc.num_pages
+        total_pages = num_pages_attr() if callable(num_pages_attr) else num_pages_attr
+    else:
+        total_pages = len(raw_text_by_page)
     ocr_fallback_pages = _run_ocr_fallback(pdf_path, raw_text_by_page, total_pages)
 
     coverage = ParsingCoverage(
