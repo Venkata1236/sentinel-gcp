@@ -48,7 +48,7 @@ class PineconeStore(VectorStore):
         )
 
         results = self._index.search(
-            namespace="",
+            namespace="default",
             query={"inputs": {"text": query_text}, "top_k": top_k},
             filter=pinecone_filter,
         )

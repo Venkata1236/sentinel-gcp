@@ -53,7 +53,7 @@ def upsert_all_chunks():
 
     for i in range(0, len(records), BATCH_SIZE):
         batch = records[i : i + BATCH_SIZE]
-        index.upsert_records(namespace="", records=batch)
+        index.upsert_records(namespace="default", records=batch)
         logger.info(f"Upserted batch {i // BATCH_SIZE + 1} ({len(batch)} records)")
 
     by_jurisdiction = {}
