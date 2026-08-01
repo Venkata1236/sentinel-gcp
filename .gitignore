@@ -14,3 +14,4 @@ dist/
 build/
 .vscode/
 tests/fixtures/sample_protocols/*.pdf
+data/

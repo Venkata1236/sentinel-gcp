@@ -29,6 +29,7 @@ from anthropic import Anthropic
 
 from sentinel_gcp.graph.state import GraphState
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -126,13 +127,7 @@ def extract_fill(state: GraphState) -> GraphState:
     )
 
     raw_text = response.content[0].text
-    try:
-        extracted_dict = json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning(
-            f"extract_fill: model did not return valid JSON, got: {raw_text[:300]}"
-        )
-        extracted_dict = None
+    extracted_dict = parse_claude_json(raw_text, "extract_fill")
 
     state["extraction"] = extracted_dict
     state["status"] = "validating"
