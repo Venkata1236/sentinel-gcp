@@ -269,8 +269,18 @@ def _get_bbox(item) -> list[float] | None:
 
 
 def _table_to_rows(table_item) -> tuple[list[dict], float]:
+    """Converts Docling's table structure into a list of row dicts,
+    and derives a confidence score from Docling's own structure-recognition
+    output where available."""
     try:
         df = table_item.export_to_dataframe()
+        df.columns = df.columns.astype(str)  # FIX: tables with no header row
+                                                # get an integer RangeIndex for
+                                                # columns (0, 1, 2...) from pandas —
+                                                # TableRegion.parsed_rows requires
+                                                # Dict[str, str] keys, not int.
+                                                # Found via real testing against
+                                                # ich_e6_r3_gcp.pdf, not code review.
         rows = df.to_dict(orient="records")
         confidence = getattr(table_item, "confidence", 0.85)
         return rows, confidence
