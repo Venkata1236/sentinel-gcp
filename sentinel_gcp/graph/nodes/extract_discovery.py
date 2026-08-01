@@ -30,6 +30,7 @@ from anthropic import Anthropic
 
 from sentinel_gcp.graph.state import GraphState
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +128,8 @@ def _call_discovery(context: str) -> dict:
         messages=[{"role": "user", "content": context}],
     )
     raw_text = response.content[0].text
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
-        logger.warning(f"extract_discovery: model did not return valid JSON, got: {raw_text[:200]}")
-        return _empty_label_map()
+    result = parse_claude_json(raw_text, "extract_discovery")
+    return result if result is not None else _empty_label_map()
 
 
 def _build_fast_context(doc_structure, extra_pages: list[int] | None = None) -> str:
