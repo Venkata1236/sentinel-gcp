@@ -1,0 +1,18 @@
+[project]
+name = "sentinel-gcp"
+version = "0.1.0"
+description = "AI-powered clinical trial protocol compliance analyzer"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sentinel_gcp*", "ingestion*", "eval*"]
+exclude = ["data*", "tests*", "venv*"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
