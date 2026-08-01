@@ -16,8 +16,19 @@ NOTE: Docling's exact class names/import paths can shift between versions.
 The isinstance() checks below assume docling_core's document item types —
 verify these imports resolve correctly against your installed Docling
 version on first real run, and adjust if the API has moved.
+
+VISIBILITY NOTE: Docling's converter.convert() is ONE blocking call with
+NO built-in per-page progress callback in its standard API — you cannot
+hook into "now processing page 47 of 137" through normal usage. What
+this file DOES provide instead, honestly: (1) the total page count
+logged BEFORE Docling starts (via a cheap PyMuPDF page-count check), so
+you know the scale of the task, and (2) a heartbeat log every 15 seconds
+WHILE convert() is blocking, so "still working" is always visible
+instead of an unbroken silent gap that's indistinguishable from a hang.
 """
 import logging
+import re
+import threading
 import time
 from pathlib import Path
 
@@ -28,7 +39,7 @@ from docling_core.types.doc.document import (
     PictureItem,
     TextItem,
 )
-import fitz  # PyMuPDF, fallback parser
+import fitz  # PyMuPDF, fallback parser + cheap page-count check
 import pytesseract
 from PIL import Image
 
@@ -45,14 +56,15 @@ logger = logging.getLogger(__name__)
 
 # Fewer than ~20 extracted characters, OR fewer than ~4 words, usually
 # indicates an image-only/scanned page rather than real extracted text.
-# Char-count alone can misfire on legitimately short pages (e.g. a page
-# that's just "Table 8" as a header) — word count catches that case.
 OCR_TEXT_LENGTH_THRESHOLD = 20
 OCR_TEXT_WORD_THRESHOLD = 4
 
 # Below this, a parsed table is flagged for downstream/human review
 # rather than trusted outright.
 LOW_TABLE_CONFIDENCE = 0.70
+
+# How often the heartbeat logs while Docling is blocking on convert().
+HEARTBEAT_INTERVAL_SECONDS = 15
 
 
 def parse_pdf(state: GraphState) -> GraphState:
@@ -67,8 +79,7 @@ def parse_pdf(state: GraphState) -> GraphState:
     except Exception:
         logger.warning(
             f"Docling failed on {pdf_path.name}; falling back to PyMuPDF",
-            exc_info=True,  # capture full traceback without escalating to ERROR —
-                              # this is a recovered condition, not a fatal one
+            exc_info=True,
         )
         structure = _parse_with_pymupdf_fallback(pdf_path)
 
@@ -87,9 +98,52 @@ def parse_pdf(state: GraphState) -> GraphState:
     return state
 
 
+def _get_page_count_cheaply(pdf_path: Path) -> int:
+    """Quick page count via PyMuPDF BEFORE handing off to Docling — this
+    is fast (milliseconds) regardless of document complexity, unlike
+    waiting for Docling's full conversion just to learn how big the
+    document is."""
+    doc = fitz.open(str(pdf_path))
+    count = len(doc)
+    doc.close()
+    return count
+
+
 def _parse_with_docling(pdf_path: Path) -> DocumentStructure:
+    total_page_count = _get_page_count_cheaply(pdf_path)
+    logger.info(
+        f"parse_pdf: {pdf_path.name} has {total_page_count} page(s) — "
+        f"starting Docling conversion (this may take several minutes on "
+        f"large/table-heavy documents; heartbeat logs every "
+        f"{HEARTBEAT_INTERVAL_SECONDS}s below)"
+    )
+
     converter = DocumentConverter()
-    result = converter.convert(str(pdf_path))
+
+    # Docling's convert() is one blocking call with NO per-page progress
+    # callback available through the standard API. This background
+    # thread logs elapsed time periodically WHILE convert() blocks, so
+    # "still working" is always visible rather than an ambiguous silent gap.
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat():
+        elapsed = 0
+        while not stop_heartbeat.wait(timeout=HEARTBEAT_INTERVAL_SECONDS):
+            elapsed += HEARTBEAT_INTERVAL_SECONDS
+            logger.info(
+                f"parse_pdf: Docling still processing {pdf_path.name} "
+                f"({total_page_count} pages)... ({elapsed}s elapsed)"
+            )
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
+
+    try:
+        result = converter.convert(str(pdf_path))
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=1)
+
     doc = result.document
 
     sections: list[Section] = []
@@ -140,17 +194,12 @@ def _parse_with_docling(pdf_path: Path) -> DocumentStructure:
                 )
             )
 
-    # FIX: doc.num_pages is a METHOD in this Docling version, not a property —
-    # hasattr() alone can't distinguish that, since the attribute genuinely
-    # exists (as a callable). Found via real testing, not code review — the
-    # original check silently passed hasattr but then tried arithmetic on
-    # a method object. Handles both cases (method or property) across
-    # different Docling versions.
     if hasattr(doc, "num_pages"):
         num_pages_attr = doc.num_pages
         total_pages = num_pages_attr() if callable(num_pages_attr) else num_pages_attr
     else:
         total_pages = len(raw_text_by_page)
+
     ocr_fallback_pages = _run_ocr_fallback(pdf_path, raw_text_by_page, total_pages)
 
     coverage = ParsingCoverage(
@@ -174,8 +223,15 @@ def _parse_with_pymupdf_fallback(pdf_path: Path) -> DocumentStructure:
     heading detection on the plain text — a lower-confidence version of
     what Docling gives us, better than losing all structure entirely."""
     doc = fitz.open(str(pdf_path))
-    raw_text_by_page = {i + 1: page.get_text() for i, page in enumerate(doc)}
     total_pages = len(doc)
+    logger.info(f"parse_pdf: PyMuPDF fallback — {pdf_path.name} has {total_pages} page(s)")
+
+    raw_text_by_page = {}
+    for i, page in enumerate(doc):
+        page_no = i + 1
+        raw_text_by_page[page_no] = page.get_text()
+        if page_no % 25 == 0 or page_no == total_pages:
+            logger.info(f"parse_pdf: PyMuPDF fallback — extracted page {page_no}/{total_pages}")
     doc.close()
 
     sections: list[Section] = []
@@ -220,11 +276,12 @@ def _run_ocr_fallback(
     if not pages_needing_ocr:
         return []
 
-    logger.info(f"OCR fallback needed on {len(pages_needing_ocr)} page(s)")
+    logger.info(f"OCR fallback needed on {len(pages_needing_ocr)} page(s): {pages_needing_ocr}")
     doc = fitz.open(str(pdf_path))
     ocr_fallback_pages: list[int] = []
     try:
-        for page_no in pages_needing_ocr:
+        for idx, page_no in enumerate(pages_needing_ocr, start=1):
+            logger.info(f"parse_pdf: OCR processing page {page_no} ({idx}/{len(pages_needing_ocr)})")
             page = doc[page_no - 1]
             pix = page.get_pixmap(dpi=300)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -233,7 +290,7 @@ def _run_ocr_fallback(
                 raw_text_by_page[page_no] = ocr_text
                 ocr_fallback_pages.append(page_no)
     finally:
-        doc.close()  # guaranteed to close even if OCR raises mid-loop
+        doc.close()
 
     return ocr_fallback_pages
 
@@ -247,18 +304,14 @@ def _extract_section_id(heading_text: str) -> str | None:
     """Pulls a section number like '9.6' off a heading string, optionally
     preceded by a word like 'Section' or 'Appendix'. Tightened after real
     testing showed the looser version false-matching addresses/dates
-    (e.g. '10628 Science Center Dr', '22 August 2022') — see CHECKPOINTS.md."""
-    import re
+    (e.g. '10628 Science Center Dr', '22 August 2022')."""
     heading_text = heading_text.strip()
-
-    # Reject obvious non-headings first
-    if len(heading_text) > 100:  # real headings are short; addresses/dates in longer lines aren't
+    if len(heading_text) > 100:
         return None
-    if re.match(r"^\d{1,5}\s+[A-Z]", heading_text):  # looks like a street address
+    if re.match(r"^\d{1,5}\s+[A-Z]", heading_text):
         return None
     if re.match(r"^\d{1,2}\s+(January|February|March|April|May|June|July|August|September|October|November|December)", heading_text):
         return None
-
     match = re.match(r"^(?:Section|Appendix)?\s*(\d+(\.\d+)+|[A-Z]\.\d+)\s+\S", heading_text)
     return match.group(1) if match else None
 
@@ -279,18 +332,11 @@ def _get_bbox(item) -> list[float] | None:
 
 
 def _table_to_rows(table_item) -> tuple[list[dict], float]:
-    """Converts Docling's table structure into a list of row dicts,
-    and derives a confidence score from Docling's own structure-recognition
-    output where available."""
     try:
         df = table_item.export_to_dataframe()
-        df.columns = df.columns.astype(str)  # FIX: tables with no header row
-                                                # get an integer RangeIndex for
-                                                # columns (0, 1, 2...) from pandas —
-                                                # TableRegion.parsed_rows requires
-                                                # Dict[str, str] keys, not int.
-                                                # Found via real testing against
-                                                # ich_e6_r3_gcp.pdf, not code review.
+        df.columns = df.columns.astype(str)  # tables with no header row get an
+                                                # integer RangeIndex — TableRegion
+                                                # requires Dict[str, str] keys
         rows = df.to_dict(orient="records")
         confidence = getattr(table_item, "confidence", 0.85)
         return rows, confidence
@@ -311,6 +357,5 @@ def _nearby_caption(picture_item) -> str | None:
 
 # TODO (future improvement, deferred): parallelize OCR across pages for
 # large scanned documents (400+ pages). Needs thread-safe handling of the
-# shared fitz.Document object — likely one fitz handle per worker rather
-# than one shared handle — plus result aggregation. Not worth the added
-# complexity until the sequential path is proven correct end-to-end.
+# shared fitz.Document object. Not worth the added complexity until the
+# sequential path is proven correct end-to-end.
