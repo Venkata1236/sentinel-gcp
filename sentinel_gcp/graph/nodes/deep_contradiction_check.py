@@ -6,6 +6,15 @@ sections, rule_engine findings, and Agent 2 findings — context the
 early contradiction_check (node 6) deliberately doesn't have, since it
 runs cheaply and early on summary fields only.
 
+PROMPT CACHING: this node sends the SAME full document text block as
+extract_fill (node 3), built via the identical
+_build_document_text_block() function imported from that module —
+byte-for-byte identical content is required for a cache hit. Running
+within the same graph execution (well inside the 5-minute cache
+window), this call should hit the cache extract_fill already wrote,
+getting ~90% off the input-token cost for that block instead of paying
+full price for the full document text a second time.
+
 Catches a genuinely different error class: cross-section contradictions
 within the SOURCE DOCUMENT ITSELF — e.g. one section states an SAE
 reporting window of 24 hours, a different section (perhaps an older,
@@ -23,6 +32,7 @@ from anthropic import Anthropic
 
 from sentinel_gcp.schema.compliance import ContradictionFinding
 from sentinel_gcp.graph.state import GraphState
+from sentinel_gcp.graph.nodes.extract_fill import _build_document_text_block
 from sentinel_gcp.config import settings
 
 logger = logging.getLogger(__name__)
@@ -67,13 +77,34 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
 
     logger.info("deep_contradiction_check: starting deep cross-section consistency check")
 
-    context = _build_context(doc_structure, rule_results, agent_2_flags)
+    # Reuses the EXACT same function extract_fill used — byte-for-byte
+    # identical output for the same doc_structure input is what makes
+    # this a cache hit, not a cache miss.
+    document_text_block = _build_document_text_block(doc_structure)
+    findings_block = _build_findings_block(rule_results, agent_2_flags)
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=2048,
         system=DEEP_CONTRADICTION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": context}],
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": document_text_block,
+                    "cache_control": {"type": "ephemeral"},
+                    # Same content as extract_fill's cached block —
+                    # should hit that cache if this runs within ~5 min
+                    # of it, which it does in a normal graph execution.
+                },
+                {
+                    "type": "text",
+                    "text": findings_block,
+                    # NOT cached — unique to this call (rule/Agent 2 findings).
+                },
+            ],
+        }],
     )
 
     raw_text = response.content[0].text
@@ -93,17 +124,24 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
     ]
 
     state["deep_contradiction_findings"] = findings
-    logger.info(f"deep_contradiction_check: found {len(findings)} unresolved contradiction(s)")
+
+    usage = response.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    logger.info(
+        f"deep_contradiction_check: found {len(findings)} unresolved contradiction(s) — "
+        f"input_tokens={usage.input_tokens}, cache_write={cache_write}, cache_read={cache_read}"
+    )
+    if cache_read == 0:
+        logger.warning(
+            "deep_contradiction_check: cache_read_input_tokens is 0 — the document "
+            "text cache from extract_fill was NOT hit. Check timing (5-min window) "
+            "or confirm _build_document_text_block() output is byte-identical."
+        )
     return state
 
 
-def _build_context(doc_structure, rule_results, agent_2_flags) -> str:
-    """Unlike the early check, this DOES include raw section text — that's
-    the whole point of running this check late, with richer context."""
-    sections_text = "\n\n".join(
-        f"[Section {s.section_id or '?'}] {s.heading}\n{s.text}"
-        for s in doc_structure.sections
-    )
+def _build_findings_block(rule_results, agent_2_flags) -> str:
     rule_findings_text = "\n".join(
         f"- {r.rule_id}: {'FLAGGED — ' + r.flag.issue if not r.passed else 'passed'}"
         for r in rule_results
@@ -113,7 +151,6 @@ def _build_context(doc_structure, rule_results, agent_2_flags) -> str:
     ) or "(none)"
 
     return (
-        f"DOCUMENT SECTIONS:\n{sections_text}\n\n"
         f"RULE ENGINE FINDINGS:\n{rule_findings_text}\n\n"
         f"AGENT 2 COMPLIANCE FINDINGS:\n{agent_2_findings_text}"
     )
