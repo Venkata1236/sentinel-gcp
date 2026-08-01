@@ -6,6 +6,17 @@ Agent 1, Pass 2 (LLM call). Takes the label map from extract_discovery
 ProtocolExtraction schema (sentinel_gcp/schema/extraction.py) — with
 per-field provenance (page, section, confidence) on every extracted value.
 
+PROMPT CACHING: the full document text is sent here AND again in
+deep_contradiction_check (node 11), within the same graph run — both
+calls typically land well inside Claude's 5-minute cache window. The
+document text is marked cache_control="ephemeral" as its own content
+block, separate from the (per-call-varying) label map / instructions,
+so the second full-document send in deep_contradiction_check gets the
+~90% cached-input discount instead of being billed at full price twice.
+See ARCHITECTURE.md cost analysis — this was the single largest cost
+driver identified per-protocol (the two full-document-text calls
+accounted for ~95% of total run cost before this fix).
+
 This does NOT validate the output — that's validate_schema (node 4).
 This node's job is purely to attempt extraction; a malformed or
 incomplete result here is expected to be caught downstream, not
@@ -85,13 +96,33 @@ def extract_fill(state: GraphState) -> GraphState:
 
     logger.info("extract_fill: starting Pass 2 structured extraction")
 
-    context = _build_extraction_context(doc_structure, label_map)
+    document_text_block = _build_document_text_block(doc_structure)
+    instructions_block = _build_instructions_block(label_map)
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=4096,
         system=EXTRACTION_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": context}],
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": document_text_block,
+                    "cache_control": {"type": "ephemeral"},
+                    # This exact block is sent again, unchanged, by
+                    # deep_contradiction_check (node 11) later in the
+                    # same run — marking it here lets that later call
+                    # reuse the cache instead of paying full price again.
+                },
+                {
+                    "type": "text",
+                    "text": instructions_block,
+                    # NOT cached — varies per document via the label map,
+                    # so caching it would never hit anyway.
+                },
+            ],
+        }],
     )
 
     raw_text = response.content[0].text
@@ -101,24 +132,25 @@ def extract_fill(state: GraphState) -> GraphState:
         logger.warning(
             f"extract_fill: model did not return valid JSON, got: {raw_text[:300]}"
         )
-        extracted_dict = None  # validate_schema will catch this as a failure and route to retry
+        extracted_dict = None
 
-    # NOTE: state['extraction'] holds a raw dict here, not a validated
-    # ProtocolExtraction instance yet. GraphState's type hint says
-    # Optional[ProtocolExtraction] for downstream clarity, but the actual
-    # Pydantic parsing + validation happens in validate_schema (node 4) —
-    # keeping this node's only job as "attempt extraction," nothing more.
     state["extraction"] = extracted_dict
     state["status"] = "validating"
-    logger.info("extract_fill: extraction attempt complete, handing off to validate_schema")
+
+    usage = response.usage
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    logger.info(
+        f"extract_fill: extraction attempt complete — "
+        f"input_tokens={usage.input_tokens}, cache_write={cache_write}, cache_read={cache_read}"
+    )
     return state
 
 
-def _build_extraction_context(doc_structure, label_map: dict) -> str:
-    """Full document text + the label map from discovery. Unlike
-    extract_discovery's deliberately narrow context, extraction genuinely
-    needs the whole document — inclusion/exclusion criteria, endpoints,
-    and the SAE section can be anywhere, not just the front matter."""
+def _build_document_text_block(doc_structure) -> str:
+    """The large, reused-across-calls part — kept as its own function
+    and its own content block specifically so it can be cache-marked
+    independently of the instructions/label-map block below."""
     all_pages_text = "\n---PAGE BREAK---\n".join(
         f"[Page {p}]\n{text}"
         for p, text in sorted(doc_structure.raw_text_by_page.items())
@@ -132,10 +164,15 @@ def _build_extraction_context(doc_structure, label_map: dict) -> str:
         + f", confidence={t.confidence:.2f}"
         for t in doc_structure.tables
     )
-
     return (
-        f"LABEL MAP FROM PRIOR ANALYSIS:\n{json.dumps(label_map, indent=2)}\n\n"
         f"DOCUMENT SECTION HEADINGS:\n{headings}\n\n"
         f"DOCUMENT TABLES DETECTED:\n{tables_summary}\n\n"
         f"FULL DOCUMENT TEXT:\n{all_pages_text}"
     )
+
+
+def _build_instructions_block(label_map: dict) -> str:
+    """The small, per-call-varying part — deliberately NOT cached,
+    since the label map differs by document and caching it would never
+    produce a hit."""
+    return f"LABEL MAP FROM PRIOR ANALYSIS:\n{json.dumps(label_map, indent=2)}"
