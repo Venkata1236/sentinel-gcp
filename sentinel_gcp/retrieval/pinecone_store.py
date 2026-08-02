@@ -59,6 +59,9 @@ class PineconeStore(VectorStore):
             filter=pinecone_filter,
         )
 
+        print(f"DEBUG RAW PINECONE RESPONSE: {results}")  # TEMPORARY — remove once bug is found
+        print(f"DEBUG RAW RESPONSE TYPE: {type(results)}")  # TEMPORARY
+
         chunks = [
             RetrievedChunk(
                 chunk_id=match["id"],
