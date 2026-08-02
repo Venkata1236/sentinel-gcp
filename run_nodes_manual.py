@@ -23,6 +23,7 @@ from sentinel_gcp.rules.definitions import RULES
 from sentinel_gcp.retrieval.pinecone_store import PineconeStore
 from pinecone import Pinecone
 from sentinel_gcp.config import settings
+from sentinel_gcp.graph.nodes.compliance_check import compliance_check
 
 _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
 
@@ -119,4 +120,15 @@ else:
     for c in chunks:
         print(f"    - [{c['topic']}] {c['regulation_source']} (score={c['score']:.3f})")
 
+    print(f"\n{'='*60}\nSTAGE 9: compliance_check (Agent 2) — REAL CLAUDE API CALL\n{'='*60}")
+    state = compliance_check(state)
+    agent2_flags = state["agent_2_flags"]
+    print(f"  {len(agent2_flags)} flag(s) raised")
+    for f in agent2_flags:
+        print(f"    - [{f.severity}] {f.issue}")
+        print(f"      evidence: {f.evidence}")
+        print(f"      regulation: {f.regulation_reference}")
+        print(f"      retrieved_chunk_id: {f.retrieved_chunk_id}")
+        print(f"      llm_certainty: {f.llm_certainty}")
+        
 print(f"\n{'='*60}\nDONE — run_id: {run_id}\n{'='*60}")
