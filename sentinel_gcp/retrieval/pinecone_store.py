@@ -47,9 +47,15 @@ class PineconeStore(VectorStore):
             else None
         )
 
+        # FIX: this Pinecone SDK version rejects the old nested query={...}
+        # dict combined with a separate filter= argument — real testing
+        # error: "received both 'query=' and 'filter'. Pass either the
+        # legacy query=SearchQuery(...) form OR the new flat keyword
+        # arguments, not both." Switched to the flat kwarg form.
         results = self._index.search(
             namespace="default",
-            query={"inputs": {"text": query_text}, "top_k": top_k},
+            inputs={"text": query_text},
+            top_k=top_k,
             filter=pinecone_filter,
         )
 
