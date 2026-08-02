@@ -108,6 +108,10 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
         }],
     )
 
+    if not response.content:
+        logger.warning(f"deep_contradiction_check: Claude returned empty content, stop_reason={response.stop_reason}")
+        state["deep_contradiction_findings"] = []
+        return state
     raw_text = response.content[0].text
     raw_findings = parse_claude_json(raw_text, "deep_contradiction_check")
     if raw_findings is None:

@@ -127,6 +127,9 @@ def _call_discovery(context: str) -> dict:
         system=DISCOVERY_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": context}],
     )
+    if not response.content:
+        logger.warning(f"extract_discovery: Claude returned empty content, stop_reason={response.stop_reason}")
+        return _empty_label_map()
     raw_text = response.content[0].text
     result = parse_claude_json(raw_text, "extract_discovery")
     return result if result is not None else _empty_label_map()
