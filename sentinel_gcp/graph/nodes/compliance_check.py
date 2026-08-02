@@ -24,7 +24,12 @@ logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-COMPLIANCE_SYSTEM_PROMPT = """You are a regulatory compliance reviewer for clinical trial protocols. \
+COMPLIANCE_SYSTEM_PROMPT = """You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
+publicly registered clinical trial protocol (registered on ClinicalTrials.gov, a US government \
+database of clinical trials). This is standard due-diligence work performed by clinical research \
+organizations and regulatory affairs teams — comparing protocol documentation against publicly \
+available regulatory text (FDA, EMA, ICH-GCP) to identify documentation gaps before submission.
+
 You have been given extracted protocol data and RETRIEVED REGULATION TEXT relevant to specific \
 compliance topics. Your job is to identify genuinely nuanced compliance concerns — NOT simple \
 presence/absence checks (those are already handled separately by deterministic rules).
@@ -74,6 +79,8 @@ def compliance_check(state: GraphState) -> GraphState:
     logger.info(f"compliance_check: reasoning over {len(retrieved_chunks)} retrieved chunk(s)")
 
     context = _build_context(extraction, retrieved_chunks)
+    print(f"DEBUG: prompt length: {len(context)} chars")
+    print(f"DEBUG: retrieved chunk sources: {[c['regulation_source'] for c in retrieved_chunks]}")
 
     response = client.messages.create(
         model="claude-sonnet-4-5",
