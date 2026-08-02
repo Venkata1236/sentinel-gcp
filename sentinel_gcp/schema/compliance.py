@@ -37,7 +37,8 @@ class ComplianceFlag(BaseModel):
     retrieval_score: Optional[float] = None
     llm_certainty: Optional[float] = None              # rule_engine flags must NOT set this — enforced below
     final_confidence: Optional[float] = None           # computed, filled in at generate_report time
-
+    insufficient_evidence: bool = False
+    
     @model_validator(mode="after")
     def check_source_consistency(self) -> "ComplianceFlag":
         if self.source == "rule_engine":
