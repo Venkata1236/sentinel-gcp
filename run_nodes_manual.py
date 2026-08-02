@@ -75,15 +75,25 @@ else:
     state = determine_jurisdiction(state)
     print(f"  jurisdiction: {state['jurisdiction']}")
 
+    from sentinel_gcp.rules.definitions import RULES
+
+    # Build a quick lookup: rule_id -> description, so results are self-explanatory
+    _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
+
     print(f"\n{'='*60}\nSTAGE 7: rule_engine (deterministic)\n{'='*60}")
     state = rule_engine(state)
     rule_results = state["rule_results"]
     flagged = [r for r in rule_results if not r.passed]
     passed = [r for r in rule_results if r.passed]
-    print(f"  {len(rule_results)} rule(s) checked — {len(passed)} passed, {len(flagged)} flagged")
-    for r in flagged:
-        print(f"    - {r.rule_id}: {r.flag.issue} (severity={r.flag.severity})")
-    for r in passed:
-        print(f"    - {r.rule_id}: passed")
+    print(f"  {len(rule_results)} rule(s) checked — {len(passed)} passed, {len(flagged)} flagged\n")
+
+    for r in rule_results:
+        description = _RULE_DESCRIPTIONS.get(r.rule_id, "unknown rule")
+        if r.passed:
+            print(f"  ✓ {r.rule_id}: {description}")
+        else:
+            print(f"  ✗ {r.rule_id}: {description}")
+            print(f"      → {r.flag.issue} (severity={r.flag.severity})")
+            print(f"      → recommendation: {r.flag.recommendation}")
 
 print(f"\n{'='*60}\nDONE — run_id: {run_id}\n{'='*60}")
