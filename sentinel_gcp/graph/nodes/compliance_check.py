@@ -12,21 +12,19 @@ groundedness).
 IMPROVEMENTS applied after real testing against OEV-125:
 1. Chunk deduplication before prompting.
 2. Section references surfaced in the formatted chunk context.
-3. Self-check requirement: every flag must include a supporting_quote —
-   the exact sentence from the cited chunk. Flags without one are dropped.
+3. Self-check requirement: every flag must include a supporting_quote.
 4. "Not extracted" vs "not present" fix: the model reasons over
    EXTRACTED FIELDS (a structured subset), not the full source document.
-   A real code review of live output caught the model treating "not in
-   my extracted fields" as "absent from the protocol" — an evidence-of-
-   absence vs absence-of-evidence problem. The prompt now explicitly
-   requires an "insufficient_evidence" flag instead of a firm finding
-   when this distinction is unclear.
-5. Reporting-relationship precision: the same review caught a flag
-   conflating the protocol's Investigator->Sponsor SAE timeline with a
-   retrieved regulation's Sponsor->Authority timeline — different
-   parties, not directly comparable. The prompt now explicitly requires
-   checking both sides govern the same reporting relationship before
-   treating a timeline mismatch as a compliance issue.
+   Prompt now requires "insufficient_evidence": true instead of a firm
+   finding when this distinction is unclear.
+5. Reporting-relationship precision: prompt now requires checking both
+   sides of a timeline comparison govern the same reporting parties
+   before treating a mismatch as a compliance issue.
+6. RETRY-ON-REFUSAL: real testing found Claude's safety classifier
+   inconsistently (~50% observed) returns stop_reason='refusal' on this
+   exact prompt/content combination — identical content succeeds on a
+   retry. The node now retries internally up to MAX_REFUSAL_RETRIES
+   times before giving up, rather than requiring a manual full rerun.
 """
 import logging
 import uuid
@@ -41,6 +39,8 @@ from sentinel_gcp.config import settings
 logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+MAX_REFUSAL_RETRIES = 2  # total attempts = 1 initial + 2 retries = 3
 
 COMPLIANCE_SYSTEM_PROMPT = """You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
 publicly registered clinical trial protocol (registered on ClinicalTrials.gov, a US government \
@@ -129,15 +129,29 @@ def compliance_check(state: GraphState) -> GraphState:
 
     context = _build_context(extraction, deduped_chunks)
 
-    response = client.messages.create(
-        model="claude-sonnet-4-5",
-        max_tokens=4096,
-        system=COMPLIANCE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": context}],
-    )
+    response = None
+    for attempt in range(1, MAX_REFUSAL_RETRIES + 2):
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=4096,
+            system=COMPLIANCE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
+        if response.content:
+            if attempt > 1:
+                logger.info(f"compliance_check: succeeded on attempt {attempt} after {attempt - 1} refusal(s)")
+            break
+        logger.warning(
+            f"compliance_check: attempt {attempt} — Claude returned empty content, "
+            f"stop_reason={response.stop_reason}"
+        )
 
-    if not response.content:
-        logger.warning(f"compliance_check: Claude returned empty content, stop_reason={response.stop_reason}")
+    if not response or not response.content:
+        logger.warning(
+            f"compliance_check: refusal persisted after {MAX_REFUSAL_RETRIES + 1} attempt(s) — "
+            f"giving up, returning empty flags. This document/query combination may need "
+            f"manual investigation."
+        )
         state["agent_2_flags"] = []
         return state
 
@@ -151,9 +165,7 @@ def compliance_check(state: GraphState) -> GraphState:
     for raw in raw_flags:
         cited_chunk_id = raw.get("chunk_id")
         if cited_chunk_id not in valid_chunk_ids:
-            logger.warning(
-                f"compliance_check: model cited unknown chunk_id '{cited_chunk_id}' — dropping flag"
-            )
+            logger.warning(f"compliance_check: model cited unknown chunk_id '{cited_chunk_id}' — dropping flag")
             continue
 
         supporting_quote = raw.get("supporting_quote")
@@ -166,10 +178,7 @@ def compliance_check(state: GraphState) -> GraphState:
 
         is_insufficient = raw.get("insufficient_evidence", False)
         if is_insufficient:
-            logger.info(
-                f"compliance_check: insufficient_evidence flag (not a firm finding): "
-                f"{raw.get('issue', '')[:100]}"
-            )
+            logger.info(f"compliance_check: insufficient_evidence flag: {raw.get('issue', '')[:100]}")
 
         try:
             flag = ComplianceFlag(
@@ -197,8 +206,6 @@ def compliance_check(state: GraphState) -> GraphState:
 
 
 def _deduplicate_chunks(chunks: list[dict]) -> list[dict]:
-    """Drops chunks with duplicate chunk_id (the same underlying chunk
-    retrieved by multiple topic queries)."""
     seen_ids = set()
     deduped = []
     for chunk in chunks:
