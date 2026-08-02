@@ -1,13 +1,13 @@
 """
 run_nodes_manual.py — manually invokes pipeline nodes in sequence,
 WITHOUT the full compiled graph (graph/builder.py) or Postgres
-checkpointing. Tests nodes 1-7: parse_pdf through rule_engine.
+checkpointing. Tests nodes 1-8: parse_pdf through retrieve.
 
 Deliberately NOT using compile_graph()/PostgresSaver yet, since that
 requires Docker Postgres to be running — this script isolates "does
-the extraction + rules logic actually work" from "does the checkpointing
-infrastructure work", so a failure in one doesn't get confused with a
-failure in the other.
+the extraction + rules + retrieval logic actually work" from "does the
+checkpointing infrastructure work", so a failure in one doesn't get
+confused with a failure in the other.
 """
 import logging
 import uuid
@@ -23,8 +23,11 @@ from sentinel_gcp.graph.nodes.validate_schema import validate_schema
 from sentinel_gcp.graph.nodes.contradiction_check import contradiction_check
 from sentinel_gcp.graph.nodes.determine_jurisdiction import determine_jurisdiction
 from sentinel_gcp.graph.nodes.rule_engine import rule_engine
-from sentinel_gcp.rules.definitions import RULES
 from sentinel_gcp.graph.nodes.retrieve import retrieve
+from sentinel_gcp.rules.definitions import RULES
+from sentinel_gcp.retrieval.pinecone_store import PineconeStore
+
+_RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
 
 # Change this to test a different one of your 3 real protocols
 PDF_PATH = "tests/fixtures/sample_protocols/oev125_etvax.pdf"
@@ -77,10 +80,6 @@ else:
     state = determine_jurisdiction(state)
     print(f"  jurisdiction: {state['jurisdiction']}")
 
-
-    # Build a quick lookup: rule_id -> description, so results are self-explanatory
-    _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
-
     print(f"\n{'='*60}\nSTAGE 7: rule_engine (deterministic)\n{'='*60}")
     state = rule_engine(state)
     rule_results = state["rule_results"]
@@ -97,12 +96,29 @@ else:
             print(f"      → {r.flag.issue} (severity={r.flag.severity})")
             print(f"      → recommendation: {r.flag.recommendation}")
 
-        print(f"\n{'='*60}\nSTAGE 8: retrieve (Pinecone query — no LLM call)\n{'='*60}")
-        state = retrieve(state)
-        chunks = state["retrieved_chunks"]
-        print(f"  {len(chunks)} chunk(s) retrieved")
-        for c in chunks:
-            print(f"    - [{c['topic']}] {c['regulation_source']} (jurisdiction={c['jurisdiction']}, score={c['score']:.3f})")
-            print(f"      chunk_id: {c['chunk_id']}")
-            
+    # --- Stage 8 is OUTSIDE and AFTER the rule loop above — this was
+    # the bug: it was previously nested INSIDE the "for r in rule_results:"
+    # loop, causing retrieve() to run once per rule (7 times) instead of once. ---
+
+    print(f"\n{'='*60}\nSTAGE 8: retrieve (Pinecone query — no LLM call)\n{'='*60}")
+
+    # DIAGNOSTIC: query with NO jurisdiction filter first, to isolate
+    # whether the 0-results problem is in the query mechanism itself
+    # or specifically in jurisdiction-filtered metadata matching.
+    # Remove this block once the real bug is found and fixed.
+    print("  --- DIAGNOSTIC: no-filter query ---")
+    _debug_store = PineconeStore()
+    _debug_results = _debug_store.query("SAE reporting timeline requirement", jurisdiction_filter=None, top_k=3)
+    print(f"  DEBUG (no filter): {len(_debug_results)} chunk(s) returned")
+    for c in _debug_results:
+        print(f"    - {c.regulation_source} (jurisdiction={c.jurisdiction}, score={c.score:.3f})")
+    print("  --- end diagnostic ---\n")
+
+    state = retrieve(state)
+    chunks = state["retrieved_chunks"]
+    print(f"  {len(chunks)} chunk(s) retrieved (jurisdiction-filtered)")
+    for c in chunks:
+        print(f"    - [{c['topic']}] {c['regulation_source']} (jurisdiction={c['jurisdiction']}, score={c['score']:.3f})")
+        print(f"      chunk_id: {c['chunk_id']}")
+
 print(f"\n{'='*60}\nDONE — run_id: {run_id}\n{'='*60}")
