@@ -82,6 +82,10 @@ def compliance_check(state: GraphState) -> GraphState:
         messages=[{"role": "user", "content": context}],
     )
 
+    if not response.content:
+        logger.warning(f"compliance_check: Claude returned empty content, stop_reason={response.stop_reason}")
+        state["agent_2_flags"] = []
+        return state
     raw_text = response.content[0].text
     raw_flags = parse_claude_json(raw_text, "compliance_check")
     if raw_flags is None:
