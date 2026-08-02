@@ -17,6 +17,7 @@ class RetrievedChunk(BaseModel):
     text: str
     regulation_source: str      # e.g. "21 CFR 312.32"
     jurisdiction: str           # "FDA" | "EMA" | "both"
+    section_ref: str | None = None
     score: float                # similarity/relevance score, 0.0-1.0
 
 
