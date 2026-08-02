@@ -67,6 +67,7 @@ class PineconeStore(VectorStore):
                 text=hit.fields.get("text", ""),
                 regulation_source=hit.fields.get("regulation_source", "unknown"),
                 jurisdiction=hit.fields.get("jurisdiction", "unknown"),
+                section_ref=hit.fields.get("section_ref"),   # NEW
                 score=hit.score,
             )
             for hit in hits
