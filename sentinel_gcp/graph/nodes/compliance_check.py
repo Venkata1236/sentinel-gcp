@@ -1,30 +1,16 @@
 """
 compliance_check — Node 10 of the Sentinel-GCP pipeline (Agent 2).
 
-LLM call. Reasons over retrieved_chunks against the validated extraction
-to produce ComplianceFlags for genuinely nuanced judgment calls — NOT for
-anything rule_engine (node 8) already covers mechanically. Every flag
-produced here MUST cite a specific retrieved_chunk_id and report
-llm_certainty — enforced by ComplianceFlag's model_validator, so an
-ungrounded flag literally cannot be constructed (see ARCHITECTURE.md §6,
-groundedness).
+...(existing docstring, plus:)
 
-IMPROVEMENTS applied after real testing against OEV-125:
-1. Chunk deduplication before prompting.
-2. Section references surfaced in the formatted chunk context.
-3. Self-check requirement: every flag must include a supporting_quote.
-4. "Not extracted" vs "not present" fix: the model reasons over
-   EXTRACTED FIELDS (a structured subset), not the full source document.
-   Prompt now requires "insufficient_evidence": true instead of a firm
-   finding when this distinction is unclear.
-5. Reporting-relationship precision: prompt now requires checking both
-   sides of a timeline comparison govern the same reporting parties
-   before treating a mismatch as a compliance issue.
-6. RETRY-ON-REFUSAL: real testing found Claude's safety classifier
-   inconsistently (~50% observed) returns stop_reason='refusal' on this
-   exact prompt/content combination — identical content succeeds on a
-   retry. The node now retries internally up to MAX_REFUSAL_RETRIES
-   times before giving up, rather than requiring a manual full rerun.
+IMPROVEMENT (round 2): insufficient_evidence findings are now a
+STRUCTURALLY SEPARATE category, not a boolean flag alongside a normal
+severity — a downstream consumer reading only `severity` can no longer
+mistake an "I can't tell" finding for an actual violation. The prompt
+is also now given the EXPLICIT list of fields ProtocolExtraction
+actually captures, so absence-claims can only be raised about concepts
+genuinely outside the schema when the model correctly recognizes them
+as such — rather than guessing at what "extracted data" might contain.
 """
 import logging
 import uuid
@@ -40,9 +26,22 @@ logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-MAX_REFUSAL_RETRIES = 2  # total attempts = 1 initial + 2 retries = 3
+MAX_REFUSAL_RETRIES = 2
 
-COMPLIANCE_SYSTEM_PROMPT = """You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
+# The ACTUAL fields ProtocolExtraction captures — given to the model
+# explicitly so it can distinguish "this concept isn't even in our
+# extraction schema" from "this field exists in the schema but came
+# back empty for this document." Keep this in sync with
+# sentinel_gcp/schema/extraction.py if fields are added/removed.
+EXTRACTED_SCHEMA_FIELDS = """
+- trial_identifier, sponsor, phase, ind_number, eudract_number
+- study_arms (cohort name, participant count, randomization ratio, population description)
+- inclusion_criteria, exclusion_criteria (as lists)
+- primary_endpoint, secondary_endpoints
+- sae_reporting_timeline
+"""
+
+COMPLIANCE_SYSTEM_PROMPT = f"""You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
 publicly registered clinical trial protocol (registered on ClinicalTrials.gov, a US government \
 database of clinical trials). This is standard due-diligence work performed by clinical research \
 organizations and regulatory affairs teams — comparing protocol documentation against publicly \
@@ -52,20 +51,21 @@ You have been given extracted protocol data and RETRIEVED REGULATION TEXT releva
 compliance topics. Your job is to identify genuinely nuanced compliance concerns — NOT simple \
 presence/absence checks (those are already handled separately by deterministic rules).
 
-Only raise a flag when there's a real judgment call to make — for example, wording that's \
-ambiguous relative to what the regulation requires, or a description that technically exists \
-but may not substantively satisfy the regulation's intent. Do NOT flag something just because \
+Only raise a COMPLIANCE FINDING when there's a real judgment call to make, based on POSITIVE \
+EVIDENCE — content that IS present in the extracted data but is ambiguous, incomplete, or \
+substantively doesn't satisfy what the regulation requires. Do NOT flag something just because \
 you can — if the extracted content clearly and adequately addresses a retrieved regulation's \
-requirement, do not manufacture a flag.
+requirement, do not manufacture a finding.
 
-CRITICAL DISTINCTION — extracted fields vs. full document: you are reasoning over EXTRACTED \
-FIELDS from the protocol, NOT the full source document. If something isn't in the extracted \
-data, that means "not captured by extraction" — it does NOT mean "absent from the protocol." \
-Only raise an absence-based flag when the retrieved regulation requires something that the \
-EXTRACTED FIELDS actively contradict, or when a required value IS present but wrong (e.g. a \
-numeric threshold that's incorrect). If you genuinely cannot tell whether something is missing \
-from the protocol or simply wasn't extracted, set "insufficient_evidence": true instead of \
-raising a firm compliance flag.
+THE EXTRACTION SCHEMA ONLY CAPTURES THESE FIELDS:
+{EXTRACTED_SCHEMA_FIELDS}
+Any regulatory concept NOT in this list (e.g. withdrawal procedures, data monitoring committee \
+composition, statistical analysis plan details) is OUTSIDE THE EXTRACTION SCHEMA ENTIRELY — the \
+extraction pipeline was never designed to capture it. Do NOT raise a finding claiming such a \
+concept is "missing from the protocol" — that would be a claim about the WHOLE PROTOCOL based \
+on a schema that never attempted to capture it. This is different from a concept that IS in the \
+schema above but came back empty/null for THIS document — that MAY be worth an insufficient-
+evidence note (see below), since it's at least plausible the field is genuinely absent.
 
 REPORTING-RELATIONSHIP CHECK: when comparing timelines/obligations between the protocol and a \
 retrieved regulation, verify they govern the SAME reporting relationship — e.g. \
@@ -73,43 +73,44 @@ Investigator-to-Sponsor and Sponsor-to-Regulatory-Authority are DIFFERENT obliga
 different parties. Do not treat a timeline as mismatched with a regulation unless both sides \
 actually govern the same parties and the same reporting step.
 
-SELF-CHECK REQUIREMENT before returning any flag: you must be able to quote the EXACT sentence \
-or phrase from the cited chunk that supports your claim. If you cannot locate a specific \
-supporting quote in the retrieved text — only a general sense that the topic is "relevant" — \
-do NOT raise the flag; use "insufficient_evidence": true instead. This is especially important \
-for ABSENCE claims — these are inherently harder to ground than direct conflicts, so be more \
-conservative with them.
+SELF-CHECK REQUIREMENT before returning any finding: you must be able to quote the EXACT sentence \
+or phrase from the cited chunk that supports your claim. If you cannot, do not raise it.
 
-For EVERY flag you raise, you MUST:
-1. Cite the EXACT chunk_id of the retrieved chunk your flag is based on — never make a claim \
-without pointing to specific retrieved text
-2. Include "supporting_quote": the exact sentence/phrase from that chunk supporting your claim
-3. Set "insufficient_evidence" to true if you cannot confidently distinguish "missing from the \
-protocol" from "not captured by extraction," or false if you have a genuine, groundable finding
-4. Report your own certainty (0.0-1.0) — be honest; a genuinely ambiguous case (especially any \
-absence claim) should get a lower certainty than a direct, clearly-worded conflict
+TWO SEPARATE OUTPUT CATEGORIES — return findings in the correct one:
 
-Return ONLY a JSON array (no other text) of flags in this shape:
-[
-  {
-    "issue": "<plain-language description of the concern>",
-    "evidence": "<the specific extracted text this concern is based on>",
-    "chunk_id": "<the exact chunk_id from RETRIEVED CHUNKS this flag cites>",
-    "supporting_quote": "<exact quote from the cited chunk supporting this flag>",
-    "regulation_reference": "<e.g. '21 CFR 312.32' or 'Regulation (EU) No 536/2014, Article 42'>",
-    "impact": "<why this matters>",
-    "recommendation": "<what a human reviewer should check or do>",
-    "severity": "low" | "medium" | "high",
-    "llm_certainty": <float 0.0-1.0>,
-    "insufficient_evidence": <true|false>
-  }
-]
-Return [] if nothing raises a genuine concern needing human judgment."""
+1. "compliance_findings" — POSITIVE-EVIDENCE findings only. The extracted data contains \
+something that conflicts with, or is ambiguous relative to, what the retrieved regulation \
+requires. severity must be "medium" or "high" — reserved for findings with real, positive \
+textual support, never for absence-based suspicions.
+
+2. "insufficient_evidence_notes" — for a field that IS in the extraction schema above, is \
+empty/null or ambiguously stated for THIS document, AND the retrieved regulation suggests it \
+should contain something specific. These are NOT compliance violations — they are notes that a \
+human reviewer should check the full source document, since the extraction pipeline may simply \
+not have captured it. Never assign "medium" or "high" severity to these; use "low" only, and \
+only as an indicator of review priority, not violation severity.
+
+For every item in EITHER category, include: issue, evidence, chunk_id (from RETRIEVED CHUNKS), \
+supporting_quote (exact text from that chunk), regulation_reference, impact, recommendation, \
+llm_certainty (0.0-1.0).
+
+Return ONLY a JSON object (no other text) in this shape:
+{{
+  "compliance_findings": [
+    {{"issue": "...", "evidence": "...", "chunk_id": "...", "supporting_quote": "...",
+      "regulation_reference": "...", "impact": "...", "recommendation": "...",
+      "severity": "medium" | "high", "llm_certainty": <float>}}
+  ],
+  "insufficient_evidence_notes": [
+    {{"issue": "...", "evidence": "...", "chunk_id": "...", "supporting_quote": "...",
+      "regulation_reference": "...", "impact": "...", "recommendation": "...",
+      "llm_certainty": <float>}}
+  ]
+}}
+Return empty arrays for either/both if nothing genuinely applies."""
 
 
 def compliance_check(state: GraphState) -> GraphState:
-    """LangGraph node entrypoint. Reads state['extraction'] and
-    state['retrieved_chunks'], writes state['agent_2_flags']."""
     extraction = state["extraction"]
     retrieved_chunks = state["retrieved_chunks"]
 
@@ -117,15 +118,12 @@ def compliance_check(state: GraphState) -> GraphState:
         raise ValueError("compliance_check requires a validated ProtocolExtraction")
 
     if not retrieved_chunks:
-        logger.info("compliance_check: no retrieved chunks — skipping, nothing to reason over")
+        logger.info("compliance_check: no retrieved chunks — skipping")
         state["agent_2_flags"] = []
         return state
 
     deduped_chunks = _deduplicate_chunks(retrieved_chunks)
-    logger.info(
-        f"compliance_check: reasoning over {len(deduped_chunks)} unique chunk(s) "
-        f"(deduplicated from {len(retrieved_chunks)} retrieved)"
-    )
+    logger.info(f"compliance_check: reasoning over {len(deduped_chunks)} unique chunk(s)")
 
     context = _build_context(extraction, deduped_chunks)
 
@@ -139,70 +137,72 @@ def compliance_check(state: GraphState) -> GraphState:
         )
         if response.content:
             if attempt > 1:
-                logger.info(f"compliance_check: succeeded on attempt {attempt} after {attempt - 1} refusal(s)")
+                logger.info(f"compliance_check: succeeded on attempt {attempt}")
             break
-        logger.warning(
-            f"compliance_check: attempt {attempt} — Claude returned empty content, "
-            f"stop_reason={response.stop_reason}"
-        )
+        logger.warning(f"compliance_check: attempt {attempt} refused, stop_reason={response.stop_reason}")
 
     if not response or not response.content:
-        logger.warning(
-            f"compliance_check: refusal persisted after {MAX_REFUSAL_RETRIES + 1} attempt(s) — "
-            f"giving up, returning empty flags. This document/query combination may need "
-            f"manual investigation."
-        )
+        logger.warning(f"compliance_check: refusal persisted after {MAX_REFUSAL_RETRIES + 1} attempts")
         state["agent_2_flags"] = []
         return state
 
     raw_text = response.content[0].text
-    raw_flags = parse_claude_json(raw_text, "compliance_check")
-    if raw_flags is None:
-        raw_flags = []
+    parsed = parse_claude_json(raw_text, "compliance_check")
+    if parsed is None:
+        parsed = {}
 
     valid_chunk_ids = {c["chunk_id"] for c in deduped_chunks}
     flags = []
-    for raw in raw_flags:
-        cited_chunk_id = raw.get("chunk_id")
-        if cited_chunk_id not in valid_chunk_ids:
-            logger.warning(f"compliance_check: model cited unknown chunk_id '{cited_chunk_id}' — dropping flag")
-            continue
 
-        supporting_quote = raw.get("supporting_quote")
-        if not supporting_quote:
-            logger.warning(
-                f"compliance_check: flag missing supporting_quote (self-check failed) — "
-                f"dropping flag: {raw.get('issue', '')[:100]}"
-            )
-            continue
-
-        is_insufficient = raw.get("insufficient_evidence", False)
-        if is_insufficient:
-            logger.info(f"compliance_check: insufficient_evidence flag: {raw.get('issue', '')[:100]}")
-
-        try:
-            flag = ComplianceFlag(
-                flag_id=f"AGENT2-{uuid.uuid4().hex[:8]}",
-                source="agent_2",
-                issue=raw["issue"],
-                evidence=raw.get("evidence"),
-                regulation_reference=raw.get("regulation_reference"),
-                retrieved_chunk_id=cited_chunk_id,
-                impact=raw.get("impact"),
-                recommendation=raw.get("recommendation"),
-                severity=raw.get("severity", "medium"),
-                llm_certainty=raw["llm_certainty"],
-                extraction_confidence=_get_extraction_confidence(extraction),
-                retrieval_score=_get_retrieval_score(deduped_chunks, cited_chunk_id),
-                insufficient_evidence=is_insufficient,
-            )
+    # Category 1: real compliance findings — medium/high severity only
+    for raw in parsed.get("compliance_findings", []):
+        flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=False)
+        if flag:
             flags.append(flag)
-        except Exception as e:
-            logger.warning(f"compliance_check: dropped malformed flag ({e}): {raw}")
+
+    # Category 2: insufficient-evidence notes — always "low", never a violation
+    for raw in parsed.get("insufficient_evidence_notes", []):
+        raw["severity"] = "low"  # forced, regardless of what the model returned
+        flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=True)
+        if flag:
+            flags.append(flag)
 
     state["agent_2_flags"] = flags
-    logger.info(f"compliance_check: {len(flags)} valid flag(s) produced")
+    logger.info(
+        f"compliance_check: {len(flags)} total item(s) "
+        f"({sum(1 for f in flags if not f.insufficient_evidence)} finding(s), "
+        f"{sum(1 for f in flags if f.insufficient_evidence)} insufficient-evidence note(s))"
+    )
     return state
+
+
+def _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient: bool) -> ComplianceFlag | None:
+    cited_chunk_id = raw.get("chunk_id")
+    if cited_chunk_id not in valid_chunk_ids:
+        logger.warning(f"compliance_check: unknown chunk_id '{cited_chunk_id}' — dropping")
+        return None
+    if not raw.get("supporting_quote"):
+        logger.warning(f"compliance_check: missing supporting_quote — dropping: {raw.get('issue', '')[:100]}")
+        return None
+    try:
+        return ComplianceFlag(
+            flag_id=f"AGENT2-{uuid.uuid4().hex[:8]}",
+            source="agent_2",
+            issue=raw["issue"],
+            evidence=raw.get("evidence"),
+            regulation_reference=raw.get("regulation_reference"),
+            retrieved_chunk_id=cited_chunk_id,
+            impact=raw.get("impact"),
+            recommendation=raw.get("recommendation"),
+            severity=raw.get("severity", "low"),
+            llm_certainty=raw["llm_certainty"],
+            extraction_confidence=_get_extraction_confidence(extraction),
+            retrieval_score=_get_retrieval_score(deduped_chunks, cited_chunk_id),
+            insufficient_evidence=insufficient,
+        )
+    except Exception as e:
+        logger.warning(f"compliance_check: dropped malformed item ({e}): {raw}")
+        return None
 
 
 def _deduplicate_chunks(chunks: list[dict]) -> list[dict]:
@@ -224,16 +224,14 @@ def _build_context(extraction, retrieved_chunks: list[dict]) -> str:
         for c in retrieved_chunks
     )
     return (
-        f"EXTRACTED PROTOCOL DATA (note: this is a STRUCTURED SUBSET of the full protocol, "
-        f"not the complete document):\n{extraction.model_dump_json(indent=2)}\n\n"
+        f"EXTRACTED PROTOCOL DATA:\n{extraction.model_dump_json(indent=2)}\n\n"
         f"RETRIEVED CHUNKS:\n{chunks_text}"
     )
 
 
 def _get_extraction_confidence(extraction) -> float | None:
     confidences = [
-        f.confidence
-        for f in [extraction.metadata.trial_identifier, extraction.metadata.sponsor]
+        f.confidence for f in [extraction.metadata.trial_identifier, extraction.metadata.sponsor]
         if f and f.confidence is not None
     ]
     return sum(confidences) / len(confidences) if confidences else None
