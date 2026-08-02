@@ -1,13 +1,8 @@
 """
 run_nodes_manual.py — manually invokes pipeline nodes in sequence,
 WITHOUT the full compiled graph (graph/builder.py) or Postgres
-checkpointing. Tests nodes 1-8: parse_pdf through retrieve.
-
-Deliberately NOT using compile_graph()/PostgresSaver yet, since that
-requires Docker Postgres to be running — this script isolates "does
-the extraction + rules + retrieval logic actually work" from "does the
-checkpointing infrastructure work", so a failure in one doesn't get
-confused with a failure in the other.
+checkpointing. Tests nodes 1-8: parse_pdf through retrieve, with
+diagnostics for the persistent Pinecone 0-results bug.
 """
 import logging
 import uuid
@@ -26,10 +21,11 @@ from sentinel_gcp.graph.nodes.rule_engine import rule_engine
 from sentinel_gcp.graph.nodes.retrieve import retrieve
 from sentinel_gcp.rules.definitions import RULES
 from sentinel_gcp.retrieval.pinecone_store import PineconeStore
+from pinecone import Pinecone
+from sentinel_gcp.config import settings
 
 _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
 
-# Change this to test a different one of your 3 real protocols
 PDF_PATH = "tests/fixtures/sample_protocols/oev125_etvax.pdf"
 
 run_id = f"manual-run-{uuid.uuid4().hex[:8]}"
@@ -47,7 +43,7 @@ print(f"\n{'='*60}\nSTAGE 2: extract_discovery (REAL CLAUDE API CALL)\n{'='*60}"
 state = extract_discovery(state)
 print(f"  label_map: {state['extraction_discovery']}")
 
-print(f"\n{'='*60}\nSTAGE 3: extract_fill (REAL CLAUDE API CALL — full document text, cached)\n{'='*60}")
+print(f"\n{'='*60}\nSTAGE 3: extract_fill (REAL CLAUDE API CALL)\n{'='*60}")
 state = extract_fill(state)
 print(f"  raw extraction (first 500 chars): {str(state['extraction'])[:500]}")
 
@@ -56,7 +52,6 @@ state = validate_schema(state)
 
 if state["extraction_errors"]:
     print(f"  VALIDATION FAILED: {state['extraction_errors']}")
-    print(f"\n{'='*60}\nSTOPPING — cannot proceed past a failed validation without retry_extraction\n{'='*60}")
 else:
     extraction = state["extraction"]
     print(f"  VALIDATION PASSED")
@@ -69,24 +64,23 @@ else:
     print(f"  exclusion_criteria count: {len(extraction.exclusion_criteria)}")
     print(f"  primary_endpoint: {extraction.primary_endpoint}")
 
-    print(f"\n{'='*60}\nSTAGE 5: contradiction_check (early) — REAL CLAUDE API CALL\n{'='*60}")
+    print(f"\n{'='*60}\nSTAGE 5: contradiction_check (early)\n{'='*60}")
     state = contradiction_check(state)
     findings = state["early_contradiction_findings"]
     print(f"  {len(findings)} finding(s)")
     for f in findings:
         print(f"    - {f.description} (sections: {f.section_refs})")
 
-    print(f"\n{'='*60}\nSTAGE 6: determine_jurisdiction (deterministic)\n{'='*60}")
+    print(f"\n{'='*60}\nSTAGE 6: determine_jurisdiction\n{'='*60}")
     state = determine_jurisdiction(state)
     print(f"  jurisdiction: {state['jurisdiction']}")
 
-    print(f"\n{'='*60}\nSTAGE 7: rule_engine (deterministic)\n{'='*60}")
+    print(f"\n{'='*60}\nSTAGE 7: rule_engine\n{'='*60}")
     state = rule_engine(state)
     rule_results = state["rule_results"]
     flagged = [r for r in rule_results if not r.passed]
     passed = [r for r in rule_results if r.passed]
     print(f"  {len(rule_results)} rule(s) checked — {len(passed)} passed, {len(flagged)} flagged\n")
-
     for r in rule_results:
         description = _RULE_DESCRIPTIONS.get(r.rule_id, "unknown rule")
         if r.passed:
@@ -94,31 +88,35 @@ else:
         else:
             print(f"  ✗ {r.rule_id}: {description}")
             print(f"      → {r.flag.issue} (severity={r.flag.severity})")
-            print(f"      → recommendation: {r.flag.recommendation}")
 
-    # --- Stage 8 is OUTSIDE and AFTER the rule loop above — this was
-    # the bug: it was previously nested INSIDE the "for r in rule_results:"
-    # loop, causing retrieve() to run once per rule (7 times) instead of once. ---
+    print(f"\n{'='*60}\nSTAGE 8: retrieve — Pinecone diagnostics\n{'='*60}")
 
-    print(f"\n{'='*60}\nSTAGE 8: retrieve (Pinecone query — no LLM call)\n{'='*60}")
+    print("  === DIAGNOSTIC A: raw index stats ===")
+    _raw_client = Pinecone(api_key=settings.PINECONE_API_KEY)
+    _raw_index = _raw_client.Index(settings.PINECONE_INDEX_NAME)
+    stats = _raw_index.describe_index_stats()
+    print(f"  total_vector_count: {stats.get('total_vector_count')}")
+    print(f"  namespaces: {stats.get('namespaces')}")
 
-    # DIAGNOSTIC: query with NO jurisdiction filter first, to isolate
-    # whether the 0-results problem is in the query mechanism itself
-    # or specifically in jurisdiction-filtered metadata matching.
-    # Remove this block once the real bug is found and fixed.
-    print("  --- DIAGNOSTIC: no-filter query ---")
+    print("\n  === DIAGNOSTIC B: raw search response shape ===")
+    _raw_response = _raw_index.search(
+        namespace="default",
+        inputs={"text": "SAE reporting timeline requirement"},
+        top_k=3,
+    )
+    print(f"  type: {type(_raw_response)}")
+    print(f"  raw response: {_raw_response}")
+
+    print("\n  === DIAGNOSTIC C: our store, no filter ===")
     _debug_store = PineconeStore()
     _debug_results = _debug_store.query("SAE reporting timeline requirement", jurisdiction_filter=None, top_k=3)
-    print(f"  DEBUG (no filter): {len(_debug_results)} chunk(s) returned")
-    for c in _debug_results:
-        print(f"    - {c.regulation_source} (jurisdiction={c.jurisdiction}, score={c.score:.3f})")
-    print("  --- end diagnostic ---\n")
+    print(f"  chunks returned: {len(_debug_results)}")
 
+    print("\n  === Real retrieve() call ===")
     state = retrieve(state)
     chunks = state["retrieved_chunks"]
     print(f"  {len(chunks)} chunk(s) retrieved (jurisdiction-filtered)")
     for c in chunks:
-        print(f"    - [{c['topic']}] {c['regulation_source']} (jurisdiction={c['jurisdiction']}, score={c['score']:.3f})")
-        print(f"      chunk_id: {c['chunk_id']}")
+        print(f"    - [{c['topic']}] {c['regulation_source']} (score={c['score']:.3f})")
 
 print(f"\n{'='*60}\nDONE — run_id: {run_id}\n{'='*60}")
