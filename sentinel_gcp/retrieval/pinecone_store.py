@@ -47,11 +47,6 @@ class PineconeStore(VectorStore):
             else None
         )
 
-        # FIX: this Pinecone SDK version rejects the old nested query={...}
-        # dict combined with a separate filter= argument — real testing
-        # error: "received both 'query=' and 'filter'. Pass either the
-        # legacy query=SearchQuery(...) form OR the new flat keyword
-        # arguments, not both." Switched to the flat kwarg form.
         results = self._index.search(
             namespace="default",
             inputs={"text": query_text},
@@ -59,18 +54,22 @@ class PineconeStore(VectorStore):
             filter=pinecone_filter,
         )
 
-        print(f"DEBUG RAW PINECONE RESPONSE: {results}")  # TEMPORARY — remove once bug is found
-        print(f"DEBUG RAW RESPONSE TYPE: {type(results)}")  # TEMPORARY
+        # FIX: this SDK version returns SearchRecordsResponse(result=SearchResult(hits=[...])),
+        # NOT the old {"matches": [...]} dict shape. Each hit has .fields (a dict)
+        # for metadata, not .metadata. Confirmed via diagnosis of the raw response —
+        # results.get("matches", []) was silently returning [] every time since
+        # "matches" doesn't exist on this object at all.
+        hits = results.result.hits
 
         chunks = [
             RetrievedChunk(
-                chunk_id=match["id"],
-                text=match["metadata"]["text"],
-                regulation_source=match["metadata"].get("regulation_source", "unknown"),
-                jurisdiction=match["metadata"].get("jurisdiction", "unknown"),
-                score=match["score"],
+                chunk_id=hit.id,
+                text=hit.fields.get("text", ""),
+                regulation_source=hit.fields.get("regulation_source", "unknown"),
+                jurisdiction=hit.fields.get("jurisdiction", "unknown"),
+                score=hit.score,
             )
-            for match in results.get("matches", [])
+            for hit in hits
         ]
         logger.info(
             f"PineconeStore: query returned {len(chunks)} chunk(s), "
