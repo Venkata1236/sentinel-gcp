@@ -23,6 +23,8 @@ from sentinel_gcp.graph.nodes.validate_schema import validate_schema
 from sentinel_gcp.graph.nodes.contradiction_check import contradiction_check
 from sentinel_gcp.graph.nodes.determine_jurisdiction import determine_jurisdiction
 from sentinel_gcp.graph.nodes.rule_engine import rule_engine
+from sentinel_gcp.rules.definitions import RULES
+from sentinel_gcp.graph.nodes.retrieve import retrieve
 
 # Change this to test a different one of your 3 real protocols
 PDF_PATH = "tests/fixtures/sample_protocols/oev125_etvax.pdf"
@@ -75,7 +77,6 @@ else:
     state = determine_jurisdiction(state)
     print(f"  jurisdiction: {state['jurisdiction']}")
 
-    from sentinel_gcp.rules.definitions import RULES
 
     # Build a quick lookup: rule_id -> description, so results are self-explanatory
     _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
@@ -96,4 +97,12 @@ else:
             print(f"      → {r.flag.issue} (severity={r.flag.severity})")
             print(f"      → recommendation: {r.flag.recommendation}")
 
+        print(f"\n{'='*60}\nSTAGE 8: retrieve (Pinecone query — no LLM call)\n{'='*60}")
+        state = retrieve(state)
+        chunks = state["retrieved_chunks"]
+        print(f"  {len(chunks)} chunk(s) retrieved")
+        for c in chunks:
+            print(f"    - [{c['topic']}] {c['regulation_source']} (jurisdiction={c['jurisdiction']}, score={c['score']:.3f})")
+            print(f"      chunk_id: {c['chunk_id']}")
+            
 print(f"\n{'='*60}\nDONE — run_id: {run_id}\n{'='*60}")
