@@ -25,6 +25,22 @@ logged BEFORE Docling starts (via a cheap PyMuPDF page-count check), so
 you know the scale of the task, and (2) a heartbeat log every 15 seconds
 WHILE convert() is blocking, so "still working" is always visible
 instead of an unbroken silent gap that's indistinguishable from a hang.
+
+PERFORMANCE FIX (found via real testing — a 74-page document took
+~1483s): Docling's default pipeline runs its OWN built-in OCR (typically
+EasyOCR, a heavy neural model) on top of layout detection and table
+recognition. This is REDUNDANT with this project's dedicated
+_run_ocr_fallback() below, which already targets ONLY genuinely scanned
+pages (native-text extraction came back empty) via lightweight
+Tesseract. Disabling Docling's built-in OCR (pipeline_options.do_ocr =
+False) removes this duplicate work without reducing coverage — the
+existing fallback still runs unchanged and catches the same pages.
+Table structure recognition is deliberately left untouched at full
+accuracy — that's where compliance-relevant data actually lives, and
+is not traded away for speed. This fix applies equally in production
+(every real user's single upload benefits) not just dev iteration —
+unlike a file-hash cache, which was considered and rejected since a
+real deployment never re-parses the same document twice.
 """
 import logging
 import re
@@ -32,7 +48,9 @@ import threading
 import time
 from pathlib import Path
 
-from docling.document_converter import DocumentConverter
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling_core.types.doc.document import (
     SectionHeaderItem,
     TableItem,
@@ -118,7 +136,13 @@ def _parse_with_docling(pdf_path: Path) -> DocumentStructure:
         f"{HEARTBEAT_INTERVAL_SECONDS}s below)"
     )
 
-    converter = DocumentConverter()
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = False  # redundant with _run_ocr_fallback() below —
+                                       # see module docstring PERFORMANCE FIX note
+
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+    )
 
     # Docling's convert() is one blocking call with NO per-page progress
     # callback available through the standard API. This background
@@ -267,7 +291,11 @@ def _run_ocr_fallback(
 ) -> list[int]:
     """Identifies which pages need OCR, then opens the PDF ONCE and
     processes all of them in that single session — not one open/close
-    per page."""
+    per page. This is the SOLE OCR mechanism now that Docling's built-in
+    OCR is disabled — it must continue to correctly catch every
+    genuinely scanned page (verify OCR-fallback page counts stay
+    consistent after this change, e.g. still catching pages 16/43 on
+    OEV-125)."""
     pages_needing_ocr = [
         page_no
         for page_no in range(1, total_pages + 1)
@@ -359,3 +387,9 @@ def _nearby_caption(picture_item) -> str | None:
 # large scanned documents (400+ pages). Needs thread-safe handling of the
 # shared fitz.Document object. Not worth the added complexity until the
 # sequential path is proven correct end-to-end.
+
+# TODO (future improvement, deferred): hard timeout around converter.convert()
+# with automatic fallback to PyMuPDF, so a genuinely pathological document
+# (e.g. NEOD001's Schedule of Assessments table, which ran far slower than
+# every other document tested) can't hang indefinitely. Not yet implemented —
+# discussed but deferred in favor of trying this OCR fix first.
