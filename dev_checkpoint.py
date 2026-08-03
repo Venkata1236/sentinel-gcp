@@ -36,7 +36,7 @@ def save_checkpoint(state: dict, label: str):
     with open(path, "wb") as f:
         pickle.dump(state, f)
     logger.info(f"dev_checkpoint: saved '{label}' -> {path}")
-    print(f"  💾 Checkpoint saved: {label}")
+    print(f"  Checkpoint saved: {label}")
 
 
 def load_checkpoint(label: str) -> dict | None:
@@ -49,7 +49,7 @@ def load_checkpoint(label: str) -> dict | None:
     with open(path, "rb") as f:
         state = pickle.load(f)
     logger.info(f"dev_checkpoint: loaded '{label}' from {path}")
-    print(f"  📂 Checkpoint loaded: {label} (skipping earlier stages — $0 spent)")
+    print(f"  Checkpoint loaded: {label} (skipping earlier stages — $0 spent)")
     return state
 
 
