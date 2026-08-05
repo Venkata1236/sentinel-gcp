@@ -1,0 +1,60 @@
+{
+  "_metadata": {
+    "source_pdf": "oev125_etvax.pdf",
+    "nct_or_source": "Scandinavian Biopharma, OEV-125, EudraCT 2021-001541-13",
+    "variance_dimensions_covered": [
+      "Phase 2",
+      "EMA/EudraCT-only (no IND)",
+      "two-arm comparator design",
+      "native text PDF",
+      "redacted personnel sections"
+    ],
+    "labeled_by": "Venkat",
+    "verification_note": "Values below reflect a live, verified extraction run against the real PDF (validate_schema PASSED). Confirmed against manual reading of the source document earlier in this project, not solely trusted from model output.",
+    "confidence_in_ground_truth": "high"
+  },
+  "metadata": {
+    "trial_identifier": {
+      "value": "OEV-125",
+      "label_used": "Study code:",
+      "page": 1,
+      "section": "Title page"
+    },
+    "sponsor": {
+      "value": "Scandinavian Biopharma Holding AB",
+      "page": 1,
+      "section": "Title page"
+    },
+    "phase_raw": "Phase 2",
+    "phase_includes_1": false,
+    "phase_includes_2": true,
+    "phase_includes_3": false,
+    "phase_includes_4": false,
+    "ind_number": null,
+    "eudract_number": {
+      "value": "2021-001541-13",
+      "label_used": "EudraCT No."
+    }
+  },
+  "jurisdiction_expected": "EMA",
+  "inclusion_criteria_count_expected": 7,
+  "exclusion_criteria_count_expected": 23,
+  "primary_endpoint_contains": "Seroconversion rates of IgA and/or IgG anti-LTB antibodies",
+  "sae_reporting_timeline_expected": "within 24 hours",
+  "sae_reporting_timeline_section_expected": "9.5.6",
+  "rule_engine_expected_results": {
+    "RULE-001_ind_missing_for_fda": "pass (not applicable — jurisdiction is EMA)",
+    "RULE-002_eudract_missing_for_ema": "pass (EudraCT present)",
+    "RULE-003_sae_timeline_missing": "pass (present)",
+    "RULE-004_no_inclusion_criteria": "pass (7 present)",
+    "RULE-005_no_exclusion_criteria": "pass (23 present)",
+    "RULE-006_no_primary_endpoint": "pass (present)",
+    "RULE-007_jurisdiction_unknown": "pass (jurisdiction confidently EMA)"
+  },
+  "known_agent2_finding_expected": {
+    "topic": "SAE reporting timeline scope",
+    "description": "Extracted timeline covers Investigator-to-Sponsor reporting (24 hours) only; does not confirm Sponsor-to-Regulatory-Authority SUSAR timelines required under EU Regulation 536/2014 Article 42(2) (7 days fatal/life-threatening, 15 days non-fatal)",
+    "expected_severity": "high",
+    "note": "This finding was verified reproducible across multiple independent live runs, unlike lower-confidence findings which varied run to run — treat this specific finding as a strong regression-test case for compliance_check quality"
+  }
+}
