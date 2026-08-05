@@ -64,14 +64,11 @@ def test_agent2_flag_missing_extraction_confidence_defaults_conservatively():
     assert abs(result - expected) < 0.001
 
 
-def test_agent2_flag_all_missing_defaults_to_neutral_midpoint():
-    """If every input is missing, confidence should land near 0.5 —
-    genuinely uncertain, not falsely confident or falsely dismissive."""
-    flag = _make_agent2_flag(extraction_confidence=None, retrieval_score=None, llm_certainty=None)
-    # llm_certainty is required by the schema's own model_validator for
-    # agent_2 flags — can't actually be None in a real ComplianceFlag.
-    # This test documents that constraint rather than testing an
-    # impossible state.
+def test_agent2_flag_requires_llm_certainty():
+    """ComplianceFlag's own model_validator requires llm_certainty for
+    any agent_2-sourced flag — constructing one without it raises,
+    rather than the compute_confidence() layer ever seeing a None value
+    to default. This documents that schema-level constraint directly."""
     with pytest.raises(Exception):
         _make_agent2_flag(extraction_confidence=None, retrieval_score=None, llm_certainty=None)
 
