@@ -184,16 +184,26 @@ def compare_trend(
     after_date: str,
     log_path: Path = FAILURE_LOG_PATH,
 ) -> dict:
-    """Compares failure counts for one category across two time
-    windows — e.g. confirming 'retrieval failures dropped after the
-    Pinecone SDK fix' with real numbers instead of a general impression.
-    before_date/after_date are ISO date strings marking the boundary
-    (e.g. the date a fix was deployed)."""
+    """Compares failure counts for one category across two EXPLICIT
+    time windows:
+      before window: before_date <= recorded_at < after_date
+      after window:  recorded_at >= after_date
+    e.g. confirming 'retrieval failures dropped after the Pinecone SDK
+    fix' with real numbers instead of a general impression. Previously
+    before_date was accepted but never actually used, silently treating
+    'before' as 'everything before after_date' with no lower bound —
+    fixed to match the documented two-window comparison."""
     records = _load_records(log_path)
     category_records = [r for r in records if r["category"] == category.value]
 
-    before_count = sum(1 for r in category_records if r["recorded_at"] < after_date)
-    after_count = sum(1 for r in category_records if r["recorded_at"] >= after_date)
+    before_count = sum(
+        1 for r in category_records
+        if before_date <= r["recorded_at"] < after_date
+    )
+    after_count = sum(
+        1 for r in category_records
+        if r["recorded_at"] >= after_date
+    )
 
     if before_count == 0:
         pct_change = None
@@ -202,6 +212,8 @@ def compare_trend(
 
     return {
         "category": category.value,
+        "before_window": f"{before_date} to {after_date}",
+        "after_window": f"{after_date} onward",
         "before_count": before_count,
         "after_count": after_count,
         "percent_change": pct_change,
