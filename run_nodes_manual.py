@@ -24,6 +24,7 @@ from sentinel_gcp.graph.nodes.determine_jurisdiction import determine_jurisdicti
 from sentinel_gcp.graph.nodes.rule_engine import rule_engine
 from sentinel_gcp.graph.nodes.retrieve import retrieve
 from sentinel_gcp.graph.nodes.compliance_check import compliance_check
+from sentinel_gcp.graph.nodes.deep_contradiction_check import deep_contradiction_check
 from sentinel_gcp.rules.definitions import RULES
 from dev_checkpoint import save_checkpoint, load_checkpoint, list_checkpoints
 
@@ -32,13 +33,12 @@ _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
 PDF_PATH = "tests/fixtures/sample_protocols/oev125_etvax.pdf"
 
 # ─── SET THIS to skip expensive already-verified stages ───────────────
-# None            = run everything from scratch (use once per document,
-#                    or after changing anything in Stages 1-4/1-8)
-# "after_stage4"  = skip Stages 1-4 (parse+discovery+fill+validate) —
-#                    use when only testing Stage 5+ changes
+# None            = run everything from scratch
+# "after_stage4"  = skip Stages 1-4 (parse+discovery+fill+validate)
 # "after_stage8"  = skip Stages 1-8 (also skip contradiction/jurisdiction/
-#                    rules/retrieve) — use when ONLY testing compliance_check
-RESUME_FROM = None
+#                    rules/retrieve) — use when testing compliance_check
+#                    or deep_contradiction_check only
+RESUME_FROM = "after_stage8"
 # ────────────────────────────────────────────────────────────────────
 
 list_checkpoints()
@@ -101,7 +101,9 @@ if RESUME_FROM != "after_stage8":
 
     save_checkpoint(state, "after_stage8")
 else:
-    state = load_checkpoint("after_stage8") or state
+    loaded = load_checkpoint("after_stage8")
+    if loaded is not None:
+        state = loaded
 
 print(f"\n{'='*60}\nSTAGE 9: compliance_check (Agent 2) — REAL CLAUDE API CALL\n{'='*60}")
 state = compliance_check(state)
@@ -112,5 +114,12 @@ print(f"  {len(findings)} finding(s), {len(notes)} insufficient-evidence note(s)
 for f in flags:
     tag = "NOTE" if f.insufficient_evidence else f.severity.upper()
     print(f"    [{tag}] {f.issue}")
+
+print(f"\n{'='*60}\nSTAGE 10: deep_contradiction_check — REAL CLAUDE API CALL\n{'='*60}")
+state = deep_contradiction_check(state)
+deep_findings = state["deep_contradiction_findings"]
+print(f"  {len(deep_findings)} unresolved contradiction(s) found")
+for f in deep_findings:
+    print(f"    - {f.description} (sections: {f.section_refs})")
 
 print(f"\n{'='*60}\nDONE\n{'='*60}")
