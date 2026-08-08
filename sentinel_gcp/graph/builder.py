@@ -27,6 +27,7 @@ from sentinel_gcp.graph.nodes.determine_jurisdiction import determine_jurisdicti
 from sentinel_gcp.graph.nodes.rule_engine import rule_engine
 from sentinel_gcp.graph.nodes.retrieve import retrieve
 from sentinel_gcp.graph.nodes.compliance_check import compliance_check
+from sentinel_gcp.graph.nodes.evidence_filter import evidence_filter
 from sentinel_gcp.graph.nodes.deep_contradiction_check import deep_contradiction_check
 from sentinel_gcp.graph.nodes.human_review_gate import human_review_gate
 from sentinel_gcp.graph.nodes.record_feedback import record_feedback
@@ -71,6 +72,7 @@ def build_graph():
     graph.add_node("rule_engine", rule_engine)
     graph.add_node("retrieve", retrieve)
     graph.add_node("compliance_check", compliance_check)
+    graph.add_node("evidence_filter", evidence_filter)
     graph.add_node("deep_contradiction_check", deep_contradiction_check)
     graph.add_node("human_review_gate", human_review_gate)
     graph.add_node("record_feedback", record_feedback)
@@ -102,7 +104,8 @@ def build_graph():
     graph.add_edge("determine_jurisdiction", "rule_engine")
     graph.add_edge("rule_engine", "retrieve")
     graph.add_edge("retrieve", "compliance_check")
-    graph.add_edge("compliance_check", "deep_contradiction_check")
+    graph.add_edge("compliance_check", "evidence_filter")
+    graph.add_edge("evidence_filter", "deep_contradiction_check")
     graph.add_edge("deep_contradiction_check", "human_review_gate")
 
     # ── Human-in-the-loop pause point (node 12) ──
