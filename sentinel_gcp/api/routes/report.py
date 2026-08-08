@@ -39,7 +39,7 @@ async def get_report(run_id: str, graph=Depends(get_graph)):
         )
 
     config = {"configurable": {"thread_id": run_id}}
-    snapshot = graph.get_state(config)
+    snapshot = await graph.aget_state(config)
     if snapshot is None or snapshot.values is None:
         raise HTTPException(
             status_code=500,

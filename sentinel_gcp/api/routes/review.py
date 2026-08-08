@@ -10,6 +10,14 @@ and resumes execution — this is what actually continues the pipeline
 past human_review_gate's interrupt point, using the SAME thread_id
 (run_id) established back in analyze.py so LangGraph resumes THIS
 specific paused run.
+
+ASYNC STATE ACCESS REQUIRED: confirmed via real testing — with
+AsyncPostgresSaver (see persistence/checkpointer.py), the synchronous
+graph.get_state()/update_state() raise asyncio.InvalidStateError from
+the main thread ("Synchronous calls to AsyncPostgresSaver are only
+allowed from a different thread"). Must use graph.aget_state() and
+graph.aupdate_state() throughout — same async-only requirement that
+drove the earlier switch to AsyncPostgresSaver in the first place.
 """
 import logging
 
@@ -70,7 +78,7 @@ async def get_review(run_id: str, graph=Depends(get_graph)):
     # PAUSED — the real case this endpoint exists for. Read the graph's
     # checkpointed state directly to get the actual findings.
     config = {"configurable": {"thread_id": run_id}}
-    snapshot = graph.get_state(config)
+    snapshot = await graph.aget_state(config)
 
     if snapshot is None or snapshot.values is None:
         raise HTTPException(
@@ -111,7 +119,7 @@ async def submit_review(run_id: str, submission: ReviewSubmission, graph=Depends
         )
 
     config = {"configurable": {"thread_id": run_id}}
-    snapshot = graph.get_state(config)
+    snapshot = await graph.aget_state(config)
     if snapshot is None:
         raise HTTPException(status_code=500, detail=f"No checkpoint state found for {run_id}")
 
@@ -142,7 +150,7 @@ async def submit_review(run_id: str, submission: ReviewSubmission, graph=Depends
     # from exactly where it paused — LangGraph's update_state + None
     # input to ainvoke is the documented pattern for resuming after
     # an interrupt_before pause.
-    graph.update_state(config, {"human_decisions": human_decisions})
+    await graph.aupdate_state(config, {"human_decisions": human_decisions})
 
     _status_store.set_status(run_id, "RUNNING", detail="Resumed after human review decision")
     result = await graph.ainvoke(None, config=config)
