@@ -77,6 +77,14 @@ class GraphState(TypedDict):
     # ── Stage 10: compliance_check (Agent 2) ───────────────────
     agent_2_flags: List[ComplianceFlag]
 
+    # ── Stage 10B: evidence_filter ──────────────────────────────
+    # Audit trail — findings evidence_filter rejected, with WHY. Kept
+    # separate from agent_2_flags (which only holds survivors) so a
+    # dropped finding isn't just silently gone; a human/report can see
+    # what got filtered and the specific groundedness/applicability
+    # reasoning behind it, not just a smaller final count.
+    evidence_filter_dropped: List[dict]
+
     # ── Stage 11: deep_contradiction_check ──────────────────────
     deep_contradiction_findings: List[ContradictionFinding]
 
@@ -107,6 +115,7 @@ def initial_state(raw_pdf_path: str, run_id: str) -> GraphState:
         rule_results=[],
         retrieved_chunks=[],
         agent_2_flags=[],
+        evidence_filter_dropped=[],
         deep_contradiction_findings=[],
         human_decisions=[],
         final_report=None,
