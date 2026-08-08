@@ -20,6 +20,7 @@ def generate_report(state: GraphState) -> GraphState:
     extraction = state["extraction"]
     rule_results = state["rule_results"]
     agent_2_flags = state["agent_2_flags"]
+    evidence_filter_dropped = state["evidence_filter_dropped"]
     early_findings = state["early_contradiction_findings"]
     deep_findings = state["deep_contradiction_findings"]
     human_decisions = state["human_decisions"]
@@ -29,6 +30,16 @@ def generate_report(state: GraphState) -> GraphState:
 
     for flag in all_flags:
         flag.final_confidence = compute_confidence(flag)
+
+    # Sorted for the report so a reviewer sees the highest-severity items
+    # first — real findings (high/medium/low) ahead of insufficient-evidence
+    # notes, which aren't violations and shouldn't compete for top billing
+    # regardless of the forced "low" severity they carry.
+    _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+    sorted_flags = sorted(
+        all_flags,
+        key=lambda f: (f.insufficient_evidence, _SEVERITY_RANK.get(f.severity, 99)),
+    )
 
     decisions_by_flag = {d["flag_id"]: d for d in human_decisions}
 
@@ -48,6 +59,7 @@ def generate_report(state: GraphState) -> GraphState:
         },
         "agent_2_summary": {
             "flags_raised": len(agent_2_flags),
+            "dropped_by_evidence_filter": len(evidence_filter_dropped),
         },
         "contradiction_summary": {
             "early_check_findings": len(early_findings),
@@ -58,8 +70,9 @@ def generate_report(state: GraphState) -> GraphState:
                 **flag.model_dump(),
                 "human_decision": decisions_by_flag.get(flag.flag_id, {}).get("decision", "not_reviewed"),
             }
-            for flag in all_flags
+            for flag in sorted_flags
         ],
+        "evidence_filter_dropped": evidence_filter_dropped,
         "contradictions": [f.model_dump() for f in early_findings + deep_findings],
     }
 
