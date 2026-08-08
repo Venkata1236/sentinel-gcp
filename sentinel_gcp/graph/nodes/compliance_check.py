@@ -48,6 +48,32 @@ _SPECULATIVE_LANGUAGE_PATTERN = re.compile(
 def _has_speculative_language(raw: dict) -> bool:
     return bool(_SPECULATIVE_LANGUAGE_PATTERN.search(raw.get("issue", "")))
 
+
+# Prompt-only enforcement of "don't flag out-of-schema topics" failed twice
+# in real testing — the model generated "withdrawal procedures not captured
+# in extraction schema" notes across multiple runs despite that exact
+# phrase being named as a banned example in the prompt. This is a
+# deterministic backstop, not a replacement for the prompt instruction —
+# catches known out-of-schema topics regardless of whether the model
+# followed the rule. List mirrors the prompt's named examples; extend both
+# together if a new out-of-schema topic starts slipping through.
+_OUT_OF_SCHEMA_TOPICS = [
+    "withdrawal procedure",
+    "data monitoring committee",
+    "dmc composition",
+    "statistical analysis plan",
+    "sap detail",
+    "gender/age allocation",
+    "demographic allocation",
+    "blinding/unblinding",
+    "informed consent process",
+]
+
+
+def _is_out_of_schema_topic(raw: dict) -> bool:
+    text = raw.get("issue", "").lower()
+    return any(topic in text for topic in _OUT_OF_SCHEMA_TOPICS)
+
 # The ACTUAL fields ProtocolExtraction captures — given to the model
 # explicitly so it can distinguish "this concept isn't even in our
 # extraction schema" from "this field exists in the schema but came
@@ -90,13 +116,18 @@ requirement, do not manufacture a finding.
 
 THE EXTRACTION SCHEMA ONLY CAPTURES THESE FIELDS:
 {EXTRACTED_SCHEMA_FIELDS}
-Any regulatory concept NOT in this list (e.g. withdrawal procedures, data monitoring committee \
-composition, statistical analysis plan details) is OUTSIDE THE EXTRACTION SCHEMA ENTIRELY — the \
-extraction pipeline was never designed to capture it. Do NOT raise a finding claiming such a \
-concept is "missing from the protocol" — that would be a claim about the WHOLE PROTOCOL based \
-on a schema that never attempted to capture it. This is different from a concept that IS in the \
-schema above but came back empty/null for THIS document — that MAY be worth an insufficient-
-evidence note (see below), since it's at least plausible the field is genuinely absent.
+The following are OUT-OF-SCHEMA topics — the extraction pipeline was never designed to capture \
+them, so you have NO extracted data to judge them against. NEVER generate a compliance_finding \
+OR an insufficient_evidence_note about ANY of these, no matter how directly a retrieved \
+regulation discusses them: withdrawal procedures, data monitoring committee (DMC) composition, \
+statistical analysis plan (SAP) details, justification for demographic/gender/age allocation, \
+blinding/unblinding procedures, informed consent process mechanics. This list is illustrative, \
+not exhaustive — the general rule is: if a concept is not one of the fields listed above, it is \
+out of scope for BOTH output categories, full stop. This is different from a concept that IS in \
+the schema above but came back empty/null for THIS document — that MAY be worth an \
+insufficient-evidence note (see below), since it's at least plausible the field is genuinely \
+absent. Before writing ANY item, check: is the topic one of the schema fields listed above? If \
+not, do not write the item — regardless of which output category you were about to put it in.
 
 REPORTING-RELATIONSHIP CHECK: when comparing timelines/obligations between the protocol and a \
 retrieved regulation, verify they govern the SAME reporting relationship — e.g. \
@@ -197,6 +228,12 @@ def compliance_check(state: GraphState) -> GraphState:
     # case the model's own wording says it isn't confident — reroute to
     # insufficient_evidence rather than trust the stated severity.
     for raw in parsed.get("compliance_findings", []):
+        if _is_out_of_schema_topic(raw):
+            logger.warning(
+                f"compliance_check: dropping out-of-schema finding despite prompt "
+                f"instruction — issue text: {raw.get('issue', '')!r}"
+            )
+            continue
         if _has_speculative_language(raw):
             logger.info(
                 f"compliance_check: rerouting speculative-language finding to "
@@ -211,6 +248,12 @@ def compliance_check(state: GraphState) -> GraphState:
 
     # Category 2: insufficient-evidence notes — always "low", never a violation
     for raw in parsed.get("insufficient_evidence_notes", []):
+        if _is_out_of_schema_topic(raw):
+            logger.warning(
+                f"compliance_check: dropping out-of-schema note despite prompt "
+                f"instruction — issue text: {raw.get('issue', '')!r}"
+            )
+            continue
         raw["severity"] = "low"  # forced, regardless of what the model returned
         flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=True)
         if flag:
