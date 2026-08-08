@@ -42,6 +42,8 @@ is not traded away for speed. This fix applies equally in production
 unlike a file-hash cache, which was considered and rejected since a
 real deployment never re-parses the same document twice.
 """
+import os
+os.environ["TORCHDYNAMO_DISABLE"] = "1"  # Fresh-machine fix: avoids requiring MSVC's cl.exe
 import logging
 import re
 import threading
