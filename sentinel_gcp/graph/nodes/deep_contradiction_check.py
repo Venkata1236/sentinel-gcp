@@ -68,11 +68,24 @@ Only flag GENUINE, UNRESOLVED contradictions — not differences that are explai
 history, versioning, or clearly distinct contexts (e.g. one timeline for SAEs, a different one \
 for non-serious AEs is NOT a contradiction).
 
+For every contradiction you flag, classify it as exactly one of:
+- "hard": a definite, unresolved conflict — the same topic, genuinely incompatible statements, \
+  no plausible reading that reconciles them. E.g. one section requires a 24-hour SAE report, \
+  another requires 7 days, for the same reporting relationship, with no amendment history \
+  explaining the difference.
+- "possible": a plausible conflict, but a reasonable alternative reading could resolve it — \
+  e.g. the two statements might govern different scopes (one visit vs. all visits) and the \
+  document doesn't clearly settle which.
+- "editorial": an inconsistency in wording or formatting only, that does NOT change what the \
+  protocol actually requires — e.g. one section says "Day 1" and another says "Visit 2" for what \
+  is clearly, unambiguously the same study day.
+
 Return ONLY a JSON array (no other text) of findings in this shape:
 [
   {
     "description": "<what conflicts, in plain language>",
-    "section_refs": ["<section IDs involved>"]
+    "section_refs": ["<section IDs involved>"],
+    "contradiction_type": "hard" | "possible" | "editorial"
   }
 ]
 Return [] if nothing is genuinely, unresolvedly contradictory."""
@@ -138,22 +151,42 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
     if raw_findings is None:
         raw_findings = []
 
-    findings = [
-        ContradictionFinding(
+    _SEVERITY_BY_TYPE = {"hard": "high", "possible": "medium", "editorial": "low"}
+
+    findings = []
+    for f in raw_findings:
+        contradiction_type = f.get("contradiction_type")
+        if contradiction_type not in _SEVERITY_BY_TYPE:
+            logger.warning(
+                f"deep_contradiction_check: missing/invalid contradiction_type "
+                f"{contradiction_type!r} for finding {f.get('description', '')[:80]!r} "
+                f"— leaving unclassified, severity stays at model default"
+            )
+            contradiction_type = None
+        findings.append(ContradictionFinding(
             description=f["description"],
             section_refs=f.get("section_refs", []),
             check_stage="deep",
-        )
-        for f in raw_findings
-    ]
+            contradiction_type=contradiction_type,
+            # Severity was previously never set for deep findings at all
+            # (always fell through to the schema default of "medium"
+            # regardless of actual severity) — now derived from the
+            # classification the model just gave us, when we have one.
+            **({"severity": _SEVERITY_BY_TYPE[contradiction_type]} if contradiction_type else {}),
+        ))
 
     state["deep_contradiction_findings"] = findings
 
     usage = response.usage
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    type_counts = {}
+    for f in findings:
+        key = f.contradiction_type or "unclassified"
+        type_counts[key] = type_counts.get(key, 0) + 1
     logger.info(
-        f"deep_contradiction_check: found {len(findings)} unresolved contradiction(s) — "
+        f"deep_contradiction_check: found {len(findings)} unresolved contradiction(s) "
+        f"({type_counts}) — "
         f"input_tokens={usage.input_tokens}, cache_write={cache_write}, cache_read={cache_read}"
     )
     if cache_read == 0:
