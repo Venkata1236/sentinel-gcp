@@ -5,7 +5,12 @@ that need API keys or tunable thresholds (per .env.example).
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(encoding="utf-8-sig")  # utf-8-sig strips a BOM if present, behaves
+                                     # identically to plain utf-8 if not — safe
+                                     # either way. Added after a BOM on .env's
+                                     # first line silently broke ANTHROPIC_API_KEY
+                                     # loading earlier (dotenv_values showed the
+                                     # key as '\ufeffANTHROPIC_API_KEY').
 
 
 class Settings:
