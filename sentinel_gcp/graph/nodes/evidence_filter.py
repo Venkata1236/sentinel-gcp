@@ -73,11 +73,13 @@ def evidence_filter(state: GraphState) -> GraphState:
         if not groundedness.grounded:
             dropped.append((flag, f"ungrounded: {groundedness.reasoning}"))
             continue
+        flag.grounded = True
 
         applicability = evaluate_applicability(flag, extraction)
         if not applicability.applicable:
             dropped.append((flag, f"not applicable: {applicability.reasoning}"))
             continue
+        flag.applicable = True
 
         kept.append(flag)
 
