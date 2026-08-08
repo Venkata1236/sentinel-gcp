@@ -35,8 +35,7 @@ def record_feedback(state: GraphState) -> GraphState:
     trial_identifier = (
         state["extraction"].metadata.trial_identifier.value if state["extraction"] else None
     )
-    run_id = state.get("run_id", "unknown")  # NOTE: run_id isn't yet a GraphState field —
-                                                # flagged below, needs adding
+    run_id = state["run_id"]
 
     recorded_count = 0
     for decision in decisions:
