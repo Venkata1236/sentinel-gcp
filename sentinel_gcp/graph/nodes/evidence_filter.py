@@ -18,9 +18,10 @@ Policy: a flag is DROPPED if either check fails —
   - not grounded  -> the citation doesn't actually say what the flag claims
   - not applicable -> the regulation doesn't actually pertain to this
                        protocol's own content (real citation, wrong target)
-Dropped flags are logged with the judge's reasoning, not silently
-discarded, so a human reviewing pipeline output can see what got
-filtered and why rather than just a smaller number.
+Dropped flags are written to state['evidence_filter_dropped'] with a
+structured reason (not just logged), so a human reviewing pipeline
+output — or generate_report.py — can see what got filtered and why,
+rather than just a smaller final count with no trail.
 """
 import logging
 
@@ -35,13 +36,15 @@ def evidence_filter(state: GraphState) -> GraphState:
     """LangGraph node entrypoint. Reads state['agent_2_flags'],
     state['retrieved_chunks'], and state['extraction']; rewrites
     state['agent_2_flags'] with ungrounded/inapplicable agent_2
-    findings removed."""
+    findings removed, and writes state['evidence_filter_dropped']
+    with the structured reason for each removal."""
     flags = state["agent_2_flags"]
     retrieved_chunks = state["retrieved_chunks"]
     extraction = state["extraction"]
 
     if not flags:
         logger.info("evidence_filter: no agent_2_flags to check — skipping")
+        state["evidence_filter_dropped"] = []
         return state
 
     chunk_text_by_id = {c["chunk_id"]: c["text"] for c in retrieved_chunks}
@@ -66,18 +69,30 @@ def evidence_filter(state: GraphState) -> GraphState:
                 f"evidence_filter: flag {flag.flag_id} cites unknown "
                 f"chunk_id={flag.retrieved_chunk_id!r} — dropping (fail-safe)"
             )
-            dropped.append((flag, "unknown chunk_id, could not verify"))
+            dropped.append({
+                "flag_id": flag.flag_id, "issue": flag.issue,
+                "reason_type": "invalid_citation",
+                "reasoning": f"cited chunk_id {flag.retrieved_chunk_id!r} not found among retrieved chunks",
+            })
             continue
 
         groundedness = evaluate_groundedness(flag, chunk_text)
         if not groundedness.grounded:
-            dropped.append((flag, f"ungrounded: {groundedness.reasoning}"))
+            dropped.append({
+                "flag_id": flag.flag_id, "issue": flag.issue,
+                "reason_type": "groundedness_failed",
+                "reasoning": groundedness.reasoning,
+            })
             continue
         flag.grounded = True
 
         applicability = evaluate_applicability(flag, extraction)
         if not applicability.applicable:
-            dropped.append((flag, f"not applicable: {applicability.reasoning}"))
+            dropped.append({
+                "flag_id": flag.flag_id, "issue": flag.issue,
+                "reason_type": "applicability_failed",
+                "reasoning": applicability.reasoning,
+            })
             continue
         flag.applicable = True
 
@@ -86,9 +101,10 @@ def evidence_filter(state: GraphState) -> GraphState:
     if dropped:
         logger.warning(
             f"evidence_filter: dropped {len(dropped)}/{len(flags)} agent_2 finding(s) "
-            f"— " + "; ".join(f"[{f.flag_id}] {reason}" for f, reason in dropped)
+            f"— " + "; ".join(f"[{d['flag_id']}] {d['reason_type']}: {d['reasoning']}" for d in dropped)
         )
     logger.info(f"evidence_filter: {len(kept)}/{len(flags)} finding(s) passed groundedness + applicability")
 
     state["agent_2_flags"] = kept
+    state["evidence_filter_dropped"] = dropped
     return state
