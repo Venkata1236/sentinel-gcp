@@ -25,11 +25,17 @@ class ComplianceFlag(BaseModel):
     source: Literal["rule_engine", "agent_2"]
     issue: str                                        # human-readable description of the gap
     evidence: Optional[str] = None                    # quoted/paraphrased text the flag is based on
+    supporting_quote: Optional[str] = None              # exact quoted text from the cited chunk — required by
+                                                          # compliance_check's prompt/validation, but previously
+                                                          # discarded instead of stored (fixed — see compliance_check.py)
     regulation_reference: Optional[str] = None         # e.g. "21 CFR 312.32"
     retrieved_chunk_id: Optional[str] = None           # traces back to the exact Pinecone chunk used (agent_2 flags only)
     impact: Optional[str] = None
     recommendation: Optional[str] = None
     severity: Literal["low", "medium", "high"] = "medium"
+    grounded: Optional[bool] = None                     # set by evidence_filter.py — None means not yet checked
+                                                          # (e.g. rule_engine flags, which evidence_filter skips)
+    applicable: Optional[bool] = None                    # set by evidence_filter.py — same None-means-unchecked convention
 
     # Confidence inputs — kept separate so compute_confidence() (sentinel_gcp/confidence/scoring.py)
     # can combine them per ARCHITECTURE.md §4, rather than trusting one bare number
