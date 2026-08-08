@@ -15,3 +15,5 @@ build/
 .vscode/
 tests/fixtures/sample_protocols/*.pdf
 data/
+
+dev_checkpoints/
