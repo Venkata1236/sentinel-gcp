@@ -5,7 +5,24 @@ Wires together the LangGraph pipeline (graph/builder.py) with the four
 endpoints defined in ARCHITECTURE.md §2.1: POST /analyze, GET/POST
 /review/{run_id}, GET /report/{run_id}. Route logic itself lives in
 api/routes/ — this file just assembles the FastAPI app and includes them.
+
+WINDOWS EVENT LOOP FIX — must run before anything else in this file,
+before ANY async code executes: psycopg's async driver (used by
+AsyncPostgresSaver, see persistence/checkpointer.py) cannot run under
+Windows' default ProactorEventLoop — confirmed via real testing, raises
+psycopg.InterfaceError at connection time. WindowsSelectorEventLoopPolicy
+is the documented fix. This only exists on Windows (referencing it on
+Linux/Mac would raise AttributeError), hence the platform guard. Set at
+module level so it takes effect at IMPORT time, before uvicorn creates
+the event loop it'll actually serve requests on — setting it later
+(e.g. inside lifespan()) would be too late, the loop already exists by then.
 """
+import sys
+import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import logging
 
 from fastapi import FastAPI
