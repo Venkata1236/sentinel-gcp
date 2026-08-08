@@ -12,7 +12,7 @@ graph's routing logic decides this, not this node" — that deferred
 decision-making lives here.
 """
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from sentinel_gcp.graph.state import GraphState
 from sentinel_gcp.config import settings
@@ -121,7 +121,7 @@ def build_graph():
     return graph
 
 
-def compile_graph(checkpointer: PostgresSaver):
+def compile_graph(checkpointer: AsyncPostgresSaver):
     """Compiles the graph with a real Postgres checkpointer and the
     interrupt configuration that makes human_review_gate a genuine,
     durable pause — not just a node that happens to log a summary."""
