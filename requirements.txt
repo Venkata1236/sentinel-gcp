@@ -21,6 +21,8 @@ faiss-cpu>=1.8.0
 # API layer
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9  # required for FastAPI's UploadFile/File(...) in api/routes/analyze.py —
+                           # was missing, caused a startup RuntimeError at import time
 
 # Persistence
 psycopg[binary]>=3.2.0
