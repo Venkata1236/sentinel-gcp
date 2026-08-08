@@ -129,6 +129,7 @@ state = deep_contradiction_check(state)
 deep_findings = state["deep_contradiction_findings"]
 print(f"  {len(deep_findings)} unresolved contradiction(s) found")
 for f in deep_findings:
-    print(f"    - {f.description} (sections: {f.section_refs})")
+    tag = (f.contradiction_type or "unclassified").upper()
+    print(f"    [{tag}] {f.description} (sections: {f.section_refs})")
 
 print(f"\n{'='*60}\nDONE\n{'='*60}")
