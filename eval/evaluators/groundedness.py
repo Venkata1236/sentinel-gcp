@@ -16,7 +16,6 @@ narrow yes/no question, not a full compliance review. This is standard
 practice for groundedness evaluation and matches ARCHITECTURE.md §6's
 "how do you know Agent 2 isn't inventing citations" interview answer.
 """
-import json
 import logging
 from dataclasses import dataclass
 
@@ -24,6 +23,7 @@ from anthropic import Anthropic
 
 from sentinel_gcp.schema.compliance import ComplianceFlag
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +81,8 @@ def evaluate_groundedness(flag: ComplianceFlag, retrieved_chunk_text: str) -> Gr
     )
 
     raw_text = response.content[0].text
-    try:
-        result = json.loads(raw_text)
-    except json.JSONDecodeError:
+    result = parse_claude_json(raw_text, "evaluate_groundedness")
+    if result is None:
         logger.warning(
             f"evaluate_groundedness: judge did not return valid JSON for flag {flag.flag_id}, "
             f"got: {raw_text[:200]} — treating as UNGROUNDED (fail-safe, not fail-open)"
