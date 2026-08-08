@@ -61,7 +61,9 @@ EXTRACTED_SCHEMA_FIELDS = """
 - sae_reporting_timeline
 """
 
-COMPLIANCE_SYSTEM_PROMPT = f"""You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
+def _build_compliance_system_prompt(jurisdiction: str | None) -> str:
+    jurisdiction_label = jurisdiction or "UNDETERMINED"
+    return f"""You are performing a ROUTINE REGULATORY COMPLIANCE REVIEW of a \
 publicly registered clinical trial protocol (registered on ClinicalTrials.gov, a US government \
 database of clinical trials). This is standard due-diligence work performed by clinical research \
 organizations and regulatory affairs teams — comparing protocol documentation against publicly \
@@ -70,6 +72,15 @@ available regulatory text (FDA, EMA, ICH-GCP) to identify documentation gaps bef
 You have been given extracted protocol data and RETRIEVED REGULATION TEXT relevant to specific \
 compliance topics. Your job is to identify genuinely nuanced compliance concerns — NOT simple \
 presence/absence checks (those are already handled separately by deterministic rules).
+
+JURISDICTION SCOPE: this protocol's determined regulatory jurisdiction is {jurisdiction_label}. \
+The RETRIEVED CHUNKS below have already been filtered to {jurisdiction_label}-relevant and \
+ICH-GCP sources (ICH-GCP applies globally regardless of jurisdiction) — do not reason about a \
+DIFFERENT jurisdiction's specific regulatory mechanisms (e.g. FDA IND numbers, 21 CFR \
+requirements) from your own general knowledge if {jurisdiction_label} is not FDA, unless the \
+extracted protocol data ITSELF explicitly indicates a submission under that other jurisdiction. \
+Every finding or note must trace to a chunk actually present in RETRIEVED CHUNKS below — if a \
+regulatory concept occurs to you but isn't grounded in one of those chunks, do not raise it.
 
 Only raise a COMPLIANCE FINDING when there's a real judgment call to make, based on POSITIVE \
 EVIDENCE — content that IS present in the extracted data but is ambiguous, incomplete, or \
@@ -110,6 +121,11 @@ human reviewer should check the full source document, since the extraction pipel
 not have captured it. Never assign "medium" or "high" severity to these; use "low" only, and \
 only as an indicator of review priority, not violation severity.
 
+Anything that is neither a genuine compliance finding nor an insufficient-evidence note — a \
+retrieved chunk that's simply not relevant, or a field that's clearly and adequately addressed — \
+should not appear in your output AT ALL. There is no third "ignore" category to populate; \
+silence on a topic already means "nothing to report."
+
 For every item in EITHER category, include: issue, evidence, chunk_id (from RETRIEVED CHUNKS), \
 supporting_quote (exact text from that chunk), regulation_reference, impact, recommendation, \
 llm_certainty (0.0-1.0).
@@ -133,6 +149,7 @@ Return empty arrays for either/both if nothing genuinely applies."""
 def compliance_check(state: GraphState) -> GraphState:
     extraction = state["extraction"]
     retrieved_chunks = state["retrieved_chunks"]
+    jurisdiction = state["jurisdiction"]
 
     if extraction is None:
         raise ValueError("compliance_check requires a validated ProtocolExtraction")
@@ -143,16 +160,17 @@ def compliance_check(state: GraphState) -> GraphState:
         return state
 
     deduped_chunks = _deduplicate_chunks(retrieved_chunks)
-    logger.info(f"compliance_check: reasoning over {len(deduped_chunks)} unique chunk(s)")
+    logger.info(f"compliance_check: reasoning over {len(deduped_chunks)} unique chunk(s), jurisdiction={jurisdiction}")
 
     context = _build_context(extraction, deduped_chunks)
+    system_prompt = _build_compliance_system_prompt(jurisdiction)
 
     response = None
     for attempt in range(1, MAX_REFUSAL_RETRIES + 2):
         response = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=4096,
-            system=COMPLIANCE_SYSTEM_PROMPT,
+            system=system_prompt,
             messages=[{"role": "user", "content": context}],
         )
         if response.content:
