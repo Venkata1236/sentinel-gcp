@@ -92,3 +92,14 @@ class ContradictionFinding(BaseModel):
     section_refs: List[str] = Field(default_factory=list)   # e.g. ["9.6", "12.3"]
     severity: Literal["low", "medium", "high"] = "medium"
     check_stage: Literal["early", "deep"]
+    contradiction_type: Optional[Literal["hard", "possible", "editorial"]] = None
+    # Only populated by deep_contradiction_check — the early check runs on
+    # summary fields only and doesn't have enough cross-section context to
+    # classify reliably. None means "not classified" (early-stage finding),
+    # not "unknown severity type" — check check_stage to distinguish.
+    # hard       = definite, unresolved conflict — same topic, genuinely
+    #              incompatible statements, no plausible reconciling reading
+    # possible   = plausible conflict, but a reasonable alternative reading
+    #              (cross-reference, ambiguous scope) could resolve it
+    # editorial  = inconsistency in wording/formatting only — doesn't affect
+    #              what the protocol actually requires
