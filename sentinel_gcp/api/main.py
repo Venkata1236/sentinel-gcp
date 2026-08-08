@@ -31,7 +31,7 @@ compiled_graph_holder: dict = {"graph": None, "checkpointer_cm": None}
 async def lifespan(app: FastAPI):
     logger.info("Starting Sentinel-GCP API — initializing Postgres checkpointer")
     checkpointer_cm = get_checkpointer()
-    checkpointer = checkpointer_cm.__enter__()
+    checkpointer = await checkpointer_cm.__aenter__()
     compiled_graph_holder["graph"] = compile_graph(checkpointer)
     compiled_graph_holder["checkpointer_cm"] = checkpointer_cm
     logger.info("Sentinel-GCP API ready")
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down Sentinel-GCP API")
     if compiled_graph_holder["checkpointer_cm"]:
-        compiled_graph_holder["checkpointer_cm"].__exit__(None, None, None)
+        await compiled_graph_holder["checkpointer_cm"].__aexit__(None, None, None)
 
 
 app = FastAPI(
