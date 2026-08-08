@@ -18,6 +18,23 @@ from sentinel_gcp.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Not uniform — SAE reporting and eligibility criteria each cover multiple
+# distinct regulatory sub-rules (reporting-relationship variants, timeline
+# thresholds; inclusion vs. exclusion vs. withdrawal-adjacent requirements
+# respectively) so a single top-3 retrieval is more likely to miss a
+# relevant chunk than for endpoints, which is usually governed by one or
+# two closely-related regulatory passages. protocol_amendments kept at
+# the prior default (3) — no evidence yet either way; revisit once
+# eval/evaluators/retrieval_metrics.py is actually run against real
+# queries rather than guessed from topic shape alone.
+_TOPIC_TOP_K = {
+    "sae_reporting": 5,
+    "eligibility": 4,
+    "protocol_amendments": 3,
+    "endpoints": 2,
+}
+_DEFAULT_TOP_K = 3
+
 
 def _get_vector_store() -> VectorStore:
     if settings.VECTOR_STORE_BACKEND == "pinecone":
@@ -45,12 +62,19 @@ def retrieve(state: GraphState) -> GraphState:
     for topic, query_text in topic_queries.items():
         if query_text is None:
             continue  # nothing extracted for this topic — skip the query, don't waste a call
-        chunks = store.query(query_text, jurisdiction_filter=jurisdiction, top_k=3)
+        top_k = _TOPIC_TOP_K.get(topic, _DEFAULT_TOP_K)
+        chunks = store.query(query_text, jurisdiction_filter=jurisdiction, top_k=top_k)
         for chunk in chunks:
             all_chunks.append({"topic": topic, **chunk.model_dump()})
 
     state["retrieved_chunks"] = all_chunks
-    logger.info(f"retrieve: {len(topic_queries)} topic quer(y/ies) issued, {len(all_chunks)} total chunk(s) retrieved")
+    per_topic_counts = {}
+    for c in all_chunks:
+        per_topic_counts[c["topic"]] = per_topic_counts.get(c["topic"], 0) + 1
+    logger.info(
+        f"retrieve: {len(topic_queries)} topic quer(y/ies) issued, "
+        f"{len(all_chunks)} total chunk(s) retrieved ({per_topic_counts})"
+    )
     return state
 
 
