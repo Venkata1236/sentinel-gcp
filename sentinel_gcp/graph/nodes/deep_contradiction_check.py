@@ -68,17 +68,42 @@ Only flag GENUINE, UNRESOLVED contradictions — not differences that are explai
 history, versioning, or clearly distinct contexts (e.g. one timeline for SAEs, a different one \
 for non-serious AEs is NOT a contradiction).
 
-For every contradiction you flag, classify it as exactly one of:
+CORE TEST — apply this before flagging anything: you must be able to state the conflict as \
+"Section A says X. Section B says NOT X" (or something logically incompatible with X) about the \
+SAME topic. If you cannot state it that way — if what you actually have is scope that's merely \
+UNCLEAR, a detail that's simply MISSING, or a definition that's UNDERSPECIFIED, where both \
+statements COULD be true simultaneously under some reasonable reading — that is NOT a \
+contradiction, even a "possible" one. Do not report it here. Ambiguity and missing detail are \
+real issues, but they are a DIFFERENT kind of issue than a contradiction, and this check is \
+scoped specifically to contradictions.
+  - NOT a contradiction: "the document doesn't specify whether X applies in case Y" (a gap)
+  - NOT a contradiction: "section A defines X one way; the document doesn't clarify how this \
+    interacts with unrelated section B" (underspecification, not conflicting statements)
+  - IS a contradiction: "section A requires X; section B requires NOT-X (or Z, incompatible with \
+    X), for the same topic, same scope, same conditions"
+
+MERGE, DON'T DUPLICATE: if you find multiple observations that describe the SAME underlying \
+conflict — e.g. the same two requirements are restated or cross-referenced in three different \
+sections — return ONE finding covering it, with ALL relevant section_refs combined, rather than \
+several near-duplicate findings about the same root issue. Only return separate findings when \
+they are genuinely about DIFFERENT topics or DIFFERENT conflicting statements, even if they \
+happen to share a section reference (a single section can validly contain multiple unrelated \
+requirements — sharing a section_ref alone does not make two issues the same conflict).
+
+For every contradiction you flag (having already passed the CORE TEST above), classify it as \
+exactly one of:
 - "hard": a definite, unresolved conflict — the same topic, genuinely incompatible statements, \
   no plausible reading that reconciles them. E.g. one section requires a 24-hour SAE report, \
   another requires 7 days, for the same reporting relationship, with no amendment history \
   explaining the difference.
-- "possible": a plausible conflict, but a reasonable alternative reading could resolve it — \
-  e.g. the two statements might govern different scopes (one visit vs. all visits) and the \
-  document doesn't clearly settle which.
-- "editorial": an inconsistency in wording or formatting only, that does NOT change what the \
-  protocol actually requires — e.g. one section says "Day 1" and another says "Visit 2" for what \
-  is clearly, unambiguously the same study day.
+- "possible": a genuine conflict IS present (passes the CORE TEST), but a specific alternative \
+  reading — one you can actually state — could resolve it. This is still X vs. NOT-X; it's just \
+  not certain which reading is correct. This is NOT for "the document doesn't say" — that fails \
+  the CORE TEST entirely and shouldn't be reported.
+- "editorial": the statements ARE technically inconsistent in wording (not merely underspecified), \
+  but resolving it one way or the other would not change what the protocol actually requires — \
+  e.g. one section says "Day 1" and another says "Visit 2" for what is clearly, unambiguously the \
+  same study day.
 
 Return ONLY a JSON array (no other text) of findings in this shape:
 [
