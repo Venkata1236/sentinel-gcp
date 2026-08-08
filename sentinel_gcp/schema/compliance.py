@@ -93,6 +93,7 @@ class ContradictionFinding(BaseModel):
     severity: Literal["low", "medium", "high"] = "medium"
     check_stage: Literal["early", "deep"]
     contradiction_type: Optional[Literal["hard", "possible", "editorial"]] = None
+    llm_confidence: Optional[float] = None
     # Only populated by deep_contradiction_check — the early check runs on
     # summary fields only and doesn't have enough cross-section context to
     # classify reliably. None means "not classified" (early-stage finding),
