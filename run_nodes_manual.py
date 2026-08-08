@@ -8,6 +8,7 @@ LATER nodes only (compliance_check, deep_contradiction_check, etc.),
 set RESUME_FROM to skip straight past the already-paid-for stages
 instead of re-running and re-paying for them.
 """
+import json
 import logging
 import uuid
 
@@ -26,6 +27,9 @@ from sentinel_gcp.graph.nodes.retrieve import retrieve
 from sentinel_gcp.graph.nodes.compliance_check import compliance_check
 from sentinel_gcp.graph.nodes.evidence_filter import evidence_filter
 from sentinel_gcp.graph.nodes.deep_contradiction_check import deep_contradiction_check
+from sentinel_gcp.graph.nodes.human_review_gate import human_review_gate
+from sentinel_gcp.graph.nodes.record_feedback import record_feedback
+from sentinel_gcp.graph.nodes.generate_report import generate_report
 from sentinel_gcp.rules.definitions import RULES
 from dev_checkpoint import save_checkpoint, load_checkpoint, list_checkpoints
 
@@ -132,5 +136,46 @@ for f in deep_findings:
     tag = (f.contradiction_type or "unclassified").upper()
     conf = f"conf={f.llm_confidence:.2f}" if f.llm_confidence is not None else "conf=?"
     print(f"    [{tag} {conf}] {f.description} (sections: {f.section_refs})")
+
+print(f"\n{'='*60}\nSTAGE 12: human_review_gate\n{'='*60}")
+print("  NOTE: this only tests the summary-assembly logic inside the node.")
+print("  The actual PAUSE (interrupt_before) and Postgres-durable checkpoint")
+print("  are configured in graph/builder.py and only take effect when run")
+print("  through a compiled LangGraph + Postgres checkpointer — neither of")
+print("  which this manual harness uses. Calling the function directly just")
+print("  runs its body once and continues immediately to the next line below,")
+print("  which is NOT what happens in a real run (a real run would stop here")
+print("  until a human submits a decision via POST /review/{run_id}).")
+state = human_review_gate(state)
+print(f"  status set to: {state['status']}")
+
+print(f"\n{'='*60}\nSTAGE 13: record_feedback\n{'='*60}")
+print("  NOTE: state['human_decisions'] is normally populated by the API layer")
+print("  handling POST /review/{run_id}, AFTER a real human reviews Stage 12's")
+print("  summary. This harness has no human and no API layer, so a SIMULATED")
+print("  decision is injected below (auto-approve every flag) purely to give")
+print("  record_feedback something real to write to the eval store — this is")
+print("  NOT a substitute for an actual human review.")
+state["human_decisions"] = [
+    {
+        "flag_id": f.flag_id,
+        "flag_snapshot": f.model_dump(),
+        "decision": "approve",  # SIMULATED — not a real human decision
+        "comment": "auto-approved by run_nodes_manual.py test harness, not a real review",
+    }
+    for f in state["agent_2_flags"]
+]
+state = record_feedback(state)
+print(f"  status set to: {state['status']}")
+
+print(f"\n{'='*60}\nSTAGE 14: generate_report\n{'='*60}")
+state = generate_report(state)
+report = state["final_report"]
+print(f"  report generated with {len(report.get('flags', []))} flag(s), "
+      f"{len(report.get('contradictions', []))} contradiction(s)")
+report_path = "dev_checkpoints/last_report.json"
+with open(report_path, "w", encoding="utf-8") as f:
+    json.dump(report, f, indent=2, default=str)
+print(f"  full report written to {report_path}")
 
 print(f"\n{'='*60}\nDONE\n{'='*60}")
