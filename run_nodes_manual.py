@@ -7,11 +7,6 @@ tokens) and after Stage 8 (post-retrieval). When testing changes to
 LATER nodes only (compliance_check, deep_contradiction_check, etc.),
 set RESUME_FROM to skip straight past the already-paid-for stages
 instead of re-running and re-paying for them.
-
-NOTE: RESUME_FROM only works if the corresponding checkpoint file
-already exists on THIS machine (checkpoints are not committed to git).
-On a fresh clone / fresh machine with no dev_checkpoints/ yet, leave
-this as None for the first run so both checkpoints get created here.
 """
 import logging
 import uuid
@@ -29,6 +24,7 @@ from sentinel_gcp.graph.nodes.determine_jurisdiction import determine_jurisdicti
 from sentinel_gcp.graph.nodes.rule_engine import rule_engine
 from sentinel_gcp.graph.nodes.retrieve import retrieve
 from sentinel_gcp.graph.nodes.compliance_check import compliance_check
+from sentinel_gcp.graph.nodes.evidence_filter import evidence_filter
 from sentinel_gcp.graph.nodes.deep_contradiction_check import deep_contradiction_check
 from sentinel_gcp.rules.definitions import RULES
 from dev_checkpoint import save_checkpoint, load_checkpoint, list_checkpoints
@@ -38,15 +34,12 @@ _RULE_DESCRIPTIONS = {rule.rule_id: rule.description for rule in RULES}
 PDF_PATH = "tests/fixtures/sample_protocols/oev125_etvax.pdf"
 
 # ─── SET THIS to skip expensive already-verified stages ───────────────
-# None            = run everything from scratch (REQUIRED on a machine
-#                    with no existing dev_checkpoints/ — see note above)
+# None            = run everything from scratch
 # "after_stage4"  = skip Stages 1-4 (parse+discovery+fill+validate)
 # "after_stage8"  = skip Stages 1-8 (also skip contradiction/jurisdiction/
 #                    rules/retrieve) — use when testing compliance_check
-#                    or deep_contradiction_check only, and ONLY once an
-#                    "after_stage8" checkpoint already exists on this
-#                    machine from a prior full run
-RESUME_FROM = None
+#                    or deep_contradiction_check only
+RESUME_FROM = "after_stage8"
 # ────────────────────────────────────────────────────────────────────
 
 list_checkpoints()
@@ -54,22 +47,6 @@ list_checkpoints()
 state = None
 if RESUME_FROM:
     state = load_checkpoint(RESUME_FROM)
-    if state is None:
-        logger.warning(
-            "RESUME_FROM=%r was set but no matching checkpoint exists on "
-            "this machine — falling back to a full run from Stage 1.",
-            RESUME_FROM,
-        )
-
-# Track how far the loaded checkpoint actually got us, so the two stage
-# blocks below don't silently skip work a stale/mismatched checkpoint
-# never did. Previously this was inferred from RESUME_FROM's value alone,
-# which broke when RESUME_FROM="after_stage8" but no such checkpoint
-# existed yet (state stayed at post-Stage-4, but Stages 5-8 were still
-# skipped) — that's what produced the empty compliance_check run.
-resumed_stage = 0
-if state is not None:
-    resumed_stage = 8 if RESUME_FROM == "after_stage8" else 4
 
 if state is None:
     run_id = f"manual-run-{uuid.uuid4().hex[:8]}"
@@ -98,9 +75,8 @@ if state is None:
     extraction = state["extraction"]
     print(f"  VALIDATION PASSED — {extraction.metadata.trial_identifier.value}")
     save_checkpoint(state, "after_stage4")
-    resumed_stage = 4
 
-if resumed_stage < 8:
+if RESUME_FROM != "after_stage8":
     print(f"\n{'='*60}\nSTAGE 5: contradiction_check (early)\n{'='*60}")
     state = contradiction_check(state)
     print(f"  {len(state['early_contradiction_findings'])} finding(s)")
@@ -125,6 +101,10 @@ if resumed_stage < 8:
     print(f"  {len(chunks)} chunk(s) retrieved")
 
     save_checkpoint(state, "after_stage8")
+else:
+    loaded = load_checkpoint("after_stage8")
+    if loaded is not None:
+        state = loaded
 
 print(f"\n{'='*60}\nSTAGE 9: compliance_check (Agent 2) — REAL CLAUDE API CALL\n{'='*60}")
 state = compliance_check(state)
@@ -132,6 +112,14 @@ flags = state["agent_2_flags"]
 findings = [f for f in flags if not f.insufficient_evidence]
 notes = [f for f in flags if f.insufficient_evidence]
 print(f"  {len(findings)} finding(s), {len(notes)} insufficient-evidence note(s)")
+for f in flags:
+    tag = "NOTE" if f.insufficient_evidence else f.severity.upper()
+    print(f"    [{tag}] {f.issue}")
+
+print(f"\n{'='*60}\nSTAGE 9B: evidence_filter (groundedness + applicability)\n{'='*60}")
+state = evidence_filter(state)
+flags = state["agent_2_flags"]
+print(f"  {len(flags)} finding(s) remaining after groundedness + applicability filtering")
 for f in flags:
     tag = "NOTE" if f.insufficient_evidence else f.severity.upper()
     print(f"    [{tag}] {f.issue}")
