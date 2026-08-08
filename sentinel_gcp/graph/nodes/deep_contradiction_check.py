@@ -15,6 +15,16 @@ window), this call should hit the cache extract_fill already wrote,
 getting ~90% off the input-token cost for that block instead of paying
 full price for the full document text a second time.
 
+ROUND 2 FIX: byte-identical document text was NOT sufficient on its
+own — the cache prefix also includes `system`, and this node used to
+send its own DEEP_CONTRADICTION_SYSTEM_PROMPT as `system` while
+extract_fill sent a different string, which broke the match even
+though the cached block's content was identical. Both nodes now send
+SHARED_DOCUMENT_SYSTEM_PROMPT (imported verbatim from extract_fill.py,
+not redefined here) as `system`, and this node's actual task
+instructions live in a separate uncached message block instead. See
+extract_fill.py's module docstring, "CACHE PREFIX REQUIREMENT".
+
 Catches a genuinely different error class: cross-section contradictions
 within the SOURCE DOCUMENT ITSELF — e.g. one section states an SAE
 reporting window of 24 hours, a different section (perhaps an older,
@@ -32,7 +42,10 @@ from anthropic import Anthropic
 
 from sentinel_gcp.schema.compliance import ContradictionFinding
 from sentinel_gcp.graph.state import GraphState
-from sentinel_gcp.graph.nodes.extract_fill import _build_document_text_block
+from sentinel_gcp.graph.nodes.extract_fill import (
+    _build_document_text_block,
+    SHARED_DOCUMENT_SYSTEM_PROMPT,
+)
 from sentinel_gcp.config import settings
 from sentinel_gcp.utils.json_parsing import parse_claude_json
 
@@ -40,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-DEEP_CONTRADICTION_SYSTEM_PROMPT = """You are checking a clinical trial protocol for INTERNAL \
+DEEP_CONTRADICTION_TASK_INSTRUCTIONS = """You are checking a clinical trial protocol for INTERNAL \
 CONTRADICTIONS across its full document text — cases where different sections of the SAME \
 document state conflicting information about the same topic.
 
@@ -87,7 +100,7 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=2048,
-        system=DEEP_CONTRADICTION_SYSTEM_PROMPT,
+        system=SHARED_DOCUMENT_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
             "content": [
@@ -95,9 +108,17 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
                     "type": "text",
                     "text": document_text_block,
                     "cache_control": {"type": "ephemeral"},
-                    # Same content as extract_fill's cached block —
-                    # should hit that cache if this runs within ~5 min
-                    # of it, which it does in a normal graph execution.
+                    # Same content as extract_fill's cached block, AND
+                    # `system` above now matches extract_fill's exactly —
+                    # both were required for a real cache hit (see
+                    # module docstring, "ROUND 2 FIX").
+                },
+                {
+                    "type": "text",
+                    "text": DEEP_CONTRADICTION_TASK_INSTRUCTIONS,
+                    # Task-specific — after the cache breakpoint, so it
+                    # can differ from extract_fill's instructions without
+                    # invalidating the shared cached block above.
                 },
                 {
                     "type": "text",

@@ -17,6 +17,20 @@ See ARCHITECTURE.md cost analysis — this was the single largest cost
 driver identified per-protocol (the two full-document-text calls
 accounted for ~95% of total run cost before this fix).
 
+CACHE PREFIX REQUIREMENT (round 2 fix): Anthropic's prompt cache keys
+on the ENTIRE prefix up to and including the cache_control breakpoint —
+that includes `system`, not just the message content blocks. The
+document_text_block being byte-identical between this node and
+deep_contradiction_check is necessary but NOT sufficient: if `system`
+differs between the two calls, the shared block still misses, because
+it's no longer at the same position in an identical prefix. This is
+why SHARED_DOCUMENT_SYSTEM_PROMPT below is deliberately generic and
+imported verbatim by deep_contradiction_check.py rather than each node
+defining its own `system` string — the task-specific instructions that
+used to live in `system` now live in an UNCACHED message block that
+comes AFTER the cached document block, where they're free to differ
+per node without breaking the cache.
+
 This does NOT validate the output — that's validate_schema (node 4).
 This node's job is purely to attempt extraction; a malformed or
 incomplete result here is expected to be caught downstream, not
@@ -35,7 +49,19 @@ logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-EXTRACTION_SYSTEM_PROMPT = """You are extracting structured data from a clinical trial protocol document.
+# Deliberately generic and IDENTICAL across every node that sends the
+# cached document_text_block (currently: this node and
+# deep_contradiction_check, which imports this constant verbatim rather
+# than defining its own). Task-specific instructions live in a separate,
+# uncached message block instead — see module docstring "CACHE PREFIX
+# REQUIREMENT" above for why this split is required, not cosmetic.
+SHARED_DOCUMENT_SYSTEM_PROMPT = (
+    "You are analyzing a clinical trial protocol document, provided to you "
+    "as extracted text below. Follow the specific task instructions given "
+    "in the user message."
+)
+
+EXTRACTION_TASK_INSTRUCTIONS = """You are extracting structured data from a clinical trial protocol document.
 
 You have been given a LABEL MAP describing what this specific document calls \
 common fields (from a prior analysis pass), plus the document's section \
@@ -103,7 +129,7 @@ def extract_fill(state: GraphState) -> GraphState:
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=4096,
-        system=EXTRACTION_SYSTEM_PROMPT,
+        system=SHARED_DOCUMENT_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
             "content": [
@@ -115,6 +141,17 @@ def extract_fill(state: GraphState) -> GraphState:
                     # deep_contradiction_check (node 11) later in the
                     # same run — marking it here lets that later call
                     # reuse the cache instead of paying full price again.
+                    # Requires `system` above to also match exactly,
+                    # which is why it's the shared generic prompt, not
+                    # this node's task-specific instructions.
+                },
+                {
+                    "type": "text",
+                    "text": EXTRACTION_TASK_INSTRUCTIONS,
+                    # Task-specific — lives AFTER the cache breakpoint,
+                    # so it's free to differ from deep_contradiction_check's
+                    # own task instructions without invalidating the
+                    # shared cache on the block above.
                 },
                 {
                     "type": "text",
