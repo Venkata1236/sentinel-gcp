@@ -28,6 +28,24 @@ client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
 MAX_REFUSAL_RETRIES = 2
 
+# Hedged language is a direct signal the model itself isn't confident this
+# is a real violation — not something to trust as-is at "medium"/"high"
+# severity. Checked against issue + evidence for every category-1
+# (compliance_findings) item; a match reroutes it into the
+# insufficient_evidence category instead of dropping it outright, since
+# the underlying observation may still be worth a reviewer's attention —
+# it just isn't a confirmed finding as written.
+import re
+
+_SPECULATIVE_LANGUAGE_PATTERN = re.compile(
+    r"\b(may|might|appears?|could|likely|seems?|possibly)\b", re.IGNORECASE
+)
+
+
+def _has_speculative_language(raw: dict) -> bool:
+    text = f"{raw.get('issue', '')} {raw.get('evidence', '')}"
+    return bool(_SPECULATIVE_LANGUAGE_PATTERN.search(text))
+
 # The ACTUAL fields ProtocolExtraction captures — given to the model
 # explicitly so it can distinguish "this concept isn't even in our
 # extraction schema" from "this field exists in the schema but came
@@ -154,9 +172,20 @@ def compliance_check(state: GraphState) -> GraphState:
     valid_chunk_ids = {c["chunk_id"] for c in deduped_chunks}
     flags = []
 
-    # Category 1: real compliance findings — medium/high severity only
+    # Category 1: real compliance findings — medium/high severity only,
+    # UNLESS the finding itself hedges (may/might/appears/...), in which
+    # case the model's own wording says it isn't confident — reroute to
+    # insufficient_evidence rather than trust the stated severity.
     for raw in parsed.get("compliance_findings", []):
-        flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=False)
+        if _has_speculative_language(raw):
+            logger.info(
+                f"compliance_check: rerouting speculative-language finding to "
+                f"insufficient_evidence: {raw.get('issue', '')[:100]}"
+            )
+            raw["severity"] = "low"
+            flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=True)
+        else:
+            flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=False)
         if flag:
             flags.append(flag)
 
@@ -190,6 +219,7 @@ def _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient: 
             source="agent_2",
             issue=raw["issue"],
             evidence=raw.get("evidence"),
+            supporting_quote=raw.get("supporting_quote"),
             regulation_reference=raw.get("regulation_reference"),
             retrieved_chunk_id=cited_chunk_id,
             impact=raw.get("impact"),
