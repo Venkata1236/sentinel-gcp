@@ -85,7 +85,8 @@ Return ONLY a JSON array (no other text) of findings in this shape:
   {
     "description": "<what conflicts, in plain language>",
     "section_refs": ["<section IDs involved>"],
-    "contradiction_type": "hard" | "possible" | "editorial"
+    "contradiction_type": "hard" | "possible" | "editorial",
+    "confidence": <float 0.0-1.0, your confidence that this is a genuine, unresolved contradiction>
   }
 ]
 Return [] if nothing is genuinely, unresolvedly contradictory."""
@@ -168,6 +169,7 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
             section_refs=f.get("section_refs", []),
             check_stage="deep",
             contradiction_type=contradiction_type,
+            llm_confidence=f.get("confidence"),
             # Severity was previously never set for deep findings at all
             # (always fell through to the schema default of "medium"
             # regardless of actual severity) — now derived from the
