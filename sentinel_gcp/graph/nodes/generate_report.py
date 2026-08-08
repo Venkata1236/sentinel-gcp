@@ -44,6 +44,7 @@ def generate_report(state: GraphState) -> GraphState:
             "checks_run": len(rule_results),
             "checks_passed": len([r for r in rule_results if r.passed]),
             "flags_raised": len(rule_flags_only),
+            "passed_rule_ids": [r.rule_id for r in rule_results if r.passed],
         },
         "agent_2_summary": {
             "flags_raised": len(agent_2_flags),
