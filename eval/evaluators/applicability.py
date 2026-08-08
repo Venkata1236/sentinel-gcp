@@ -20,7 +20,6 @@ judge call would make a failure ambiguous (which of the two problems
 occurred?). Separate scores mean each failure mode is independently
 diagnosable.
 """
-import json
 import logging
 from dataclasses import dataclass
 
@@ -29,6 +28,7 @@ from anthropic import Anthropic
 from sentinel_gcp.schema.compliance import ComplianceFlag
 from sentinel_gcp.schema.extraction import ProtocolExtraction
 from sentinel_gcp.config import settings
+from sentinel_gcp.utils.json_parsing import parse_claude_json
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,8 @@ def evaluate_applicability(
     )
 
     raw_text = response.content[0].text
-    try:
-        result = json.loads(raw_text)
-    except json.JSONDecodeError:
+    result = parse_claude_json(raw_text, "evaluate_applicability")
+    if result is None:
         logger.warning(
             f"evaluate_applicability: judge did not return valid JSON for flag {flag.flag_id}, "
             f"got: {raw_text[:200]} — treating as NOT APPLICABLE (fail-safe, not fail-open)"
