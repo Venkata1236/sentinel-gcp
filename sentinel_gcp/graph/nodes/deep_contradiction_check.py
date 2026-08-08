@@ -37,6 +37,7 @@ check, not a relocation of it.
 """
 import json
 import logging
+import re
 
 from anthropic import Anthropic
 
@@ -52,6 +53,25 @@ from sentinel_gcp.utils.json_parsing import parse_claude_json
 logger = logging.getLogger(__name__)
 
 client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+# Prompt-only enforcement of the CORE TEST is not fully reliable — same
+# lesson already learned in compliance_check.py's speculative-language
+# filter. These phrases are strong signals the model is describing
+# ambiguity/missing-information, not an actual "Section A says X, Section
+# B says NOT X" conflict, REGARDLESS of what contradiction_type it
+# assigned. Checked against `description` for every finding; a match
+# drops the finding entirely rather than downgrading it — if the
+# description itself says "does not explicitly," the model has already
+# told us this isn't a real conflict, so there's nothing to keep.
+_AMBIGUITY_LANGUAGE_PATTERN = re.compile(
+    r"does not explicitly|could be interpreted|not (explicitly )?specified|"
+    r"\bambiguity\b|\bambiguous\b|does not (state|mandate|clarify|resolve)",
+    re.IGNORECASE,
+)
+
+
+def _describes_ambiguity_not_contradiction(f: dict) -> bool:
+    return bool(_AMBIGUITY_LANGUAGE_PATTERN.search(f.get("description", "")))
 
 DEEP_CONTRADICTION_TASK_INSTRUCTIONS = """You are checking a clinical trial protocol for INTERNAL \
 CONTRADICTIONS across its full document text — cases where different sections of the SAME \
@@ -76,9 +96,23 @@ statements COULD be true simultaneously under some reasonable reading — that i
 contradiction, even a "possible" one. Do not report it here. Ambiguity and missing detail are \
 real issues, but they are a DIFFERENT kind of issue than a contradiction, and this check is \
 scoped specifically to contradictions.
+
+SIMULTANEOUS-TRUTH TEST (apply this too, separately): if BOTH statements can be true at the \
+same time without either one being violated, this is NOT a contradiction — return nothing. \
+"Day 15" stated in an overview/summary passage and "Day 15 (±2)" stated in the detailed \
+schedule/table are NOT a contradiction — a summary section stating a rule less precisely than a \
+detailed section stating the SAME rule is not a conflict, it's normal document structure \
+(headline vs. detail). Only treat this as a contradiction if the summary statement is worded as \
+an actual EXCLUSION or LIMIT (e.g. "only Day 15 is acceptable, no exceptions") that the detailed \
+section then violates — not merely "the summary happens not to repeat every qualifier."
+
   - NOT a contradiction: "the document doesn't specify whether X applies in case Y" (a gap)
   - NOT a contradiction: "section A defines X one way; the document doesn't clarify how this \
     interacts with unrelated section B" (underspecification, not conflicting statements)
+  - NOT a contradiction: a summary/overview passage states a rule in less detail than a table or \
+    detailed section states the SAME rule (e.g. "Day 15" vs. "Day 15 (±2)") — this is normal \
+    summary-vs-detail structure, not a conflict, UNLESS the summary explicitly excludes what the \
+    detail permits
   - IS a contradiction: "section A requires X; section B requires NOT-X (or Z, incompatible with \
     X), for the same topic, same scope, same conditions"
 
@@ -181,6 +215,14 @@ def deep_contradiction_check(state: GraphState) -> GraphState:
 
     findings = []
     for f in raw_findings:
+        if _describes_ambiguity_not_contradiction(f):
+            logger.warning(
+                f"deep_contradiction_check: dropping finding despite CORE TEST instruction — "
+                f"description contains ambiguity language, not a real conflict: "
+                f"{f.get('description', '')!r}"
+            )
+            continue
+
         contradiction_type = f.get("contradiction_type")
         if contradiction_type not in _SEVERITY_BY_TYPE:
             logger.warning(
