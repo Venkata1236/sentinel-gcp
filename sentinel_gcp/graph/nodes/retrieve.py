@@ -35,6 +35,34 @@ _TOPIC_TOP_K = {
 }
 _DEFAULT_TOP_K = 3
 
+# Re-ranking: overfetch more candidates than we'll keep, then re-score
+# combining Pinecone's vector similarity with a simple keyword-overlap
+# signal against the topic query, keeping only the final top_k. No new
+# dependency (no cross-encoder, no reranking API) — deliberately the
+# cheapest option, chosen as the default absent a specific preference for
+# a cross-encoder or Cohere Rerank. Revisit if eval/evaluators/
+# retrieval_metrics.py run against real queries shows this isn't enough.
+_OVERFETCH_MULTIPLIER = 3
+_RERANK_SCORE_WEIGHT = 0.7   # Pinecone vector similarity
+_RERANK_KEYWORD_WEIGHT = 0.3  # keyword overlap with the topic query
+
+_STOPWORDS = {
+    "a", "an", "the", "for", "of", "to", "and", "or", "in", "on", "with",
+    "requirements", "requirement",  # near-universal in every topic query here — no discriminating power
+}
+
+
+def _keyword_overlap_score(query_text: str, chunk_text: str) -> float:
+    """Fraction of the query's meaningful words that actually appear in
+    the chunk. Overlap coefficient relative to query length (not
+    Jaccard) — a long chunk containing all the query's words shouldn't
+    score worse than a short one just for also containing other text."""
+    query_words = {w for w in query_text.lower().split() if w not in _STOPWORDS and len(w) > 2}
+    if not query_words:
+        return 0.0
+    chunk_words = set(chunk_text.lower().split())
+    return len(query_words & chunk_words) / len(query_words)
+
 
 def _get_vector_store() -> VectorStore:
     if settings.VECTOR_STORE_BACKEND == "pinecone":
@@ -63,8 +91,19 @@ def retrieve(state: GraphState) -> GraphState:
         if query_text is None:
             continue  # nothing extracted for this topic — skip the query, don't waste a call
         top_k = _TOPIC_TOP_K.get(topic, _DEFAULT_TOP_K)
-        chunks = store.query(query_text, jurisdiction_filter=jurisdiction, top_k=top_k)
-        for chunk in chunks:
+        overfetch_k = top_k * _OVERFETCH_MULTIPLIER
+        candidates = store.query(query_text, jurisdiction_filter=jurisdiction, top_k=overfetch_k)
+
+        reranked = sorted(
+            candidates,
+            key=lambda c: (
+                _RERANK_SCORE_WEIGHT * c.score
+                + _RERANK_KEYWORD_WEIGHT * _keyword_overlap_score(query_text, c.text)
+            ),
+            reverse=True,
+        )[:top_k]
+
+        for chunk in reranked:
             all_chunks.append({"topic": topic, **chunk.model_dump()})
 
     state["retrieved_chunks"] = all_chunks
