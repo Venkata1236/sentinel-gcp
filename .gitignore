@@ -17,3 +17,5 @@ tests/fixtures/sample_protocols/*.pdf
 data/
 
 dev_checkpoints/
+
+review_payload.json
