@@ -94,5 +94,12 @@ async def _run_graph_background(graph, state: dict, run_id: str):
         logger.info(f"_run_graph_background: {run_id} reached status={final_status}")
 
     except Exception as e:
-        _status_store.set_status(run_id, "FAILED", detail=f"Unhandled exception: {str(e)}")
+        # str(e) can be EMPTY for some exception types (e.g. a bare
+        # AssertionError, or some library-internal exceptions) — confirmed
+        # in real testing: a FAILED run's detail came back as literally
+        # "Unhandled exception: " with nothing after the colon, forcing a
+        # server-log dig to find the real cause. repr(e) always includes
+        # the exception type name and args, so the API response itself is
+        # now diagnosable without needing terminal access to the server.
+        _status_store.set_status(run_id, "FAILED", detail=f"Unhandled exception: {type(e).__name__}: {e!r}")
         logger.exception(f"_run_graph_background: {run_id} failed with an unhandled exception")
