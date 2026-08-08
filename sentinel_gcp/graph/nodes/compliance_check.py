@@ -30,11 +30,14 @@ MAX_REFUSAL_RETRIES = 2
 
 # Hedged language is a direct signal the model itself isn't confident this
 # is a real violation — not something to trust as-is at "medium"/"high"
-# severity. Checked against issue + evidence for every category-1
-# (compliance_findings) item; a match reroutes it into the
-# insufficient_evidence category instead of dropping it outright, since
-# the underlying observation may still be worth a reviewer's attention —
-# it just isn't a confirmed finding as written.
+# severity. Checked against `issue` ONLY, not `evidence` — evidence quotes
+# or paraphrases the source regulatory chunk, which legitimately contains
+# words like "may" in its own conditional structure (e.g. "SUSARs may
+# require expedited reporting") without that reflecting the MODEL's
+# confidence at all. Scanning evidence too caused a real false-positive
+# demotion (SAE-reporting-relationship finding, previously confirmed
+# grounded at 0.95 confidence, got rerouted here for a hedge word that
+# was almost certainly in the quoted source text, not the model's claim).
 import re
 
 _SPECULATIVE_LANGUAGE_PATTERN = re.compile(
@@ -43,8 +46,7 @@ _SPECULATIVE_LANGUAGE_PATTERN = re.compile(
 
 
 def _has_speculative_language(raw: dict) -> bool:
-    text = f"{raw.get('issue', '')} {raw.get('evidence', '')}"
-    return bool(_SPECULATIVE_LANGUAGE_PATTERN.search(text))
+    return bool(_SPECULATIVE_LANGUAGE_PATTERN.search(raw.get("issue", "")))
 
 # The ACTUAL fields ProtocolExtraction captures — given to the model
 # explicitly so it can distinguish "this concept isn't even in our
@@ -180,7 +182,7 @@ def compliance_check(state: GraphState) -> GraphState:
         if _has_speculative_language(raw):
             logger.info(
                 f"compliance_check: rerouting speculative-language finding to "
-                f"insufficient_evidence: {raw.get('issue', '')[:100]}"
+                f"insufficient_evidence — issue text: {raw.get('issue', '')!r}"
             )
             raw["severity"] = "low"
             flag = _build_flag(raw, valid_chunk_ids, extraction, deduped_chunks, insufficient=True)
